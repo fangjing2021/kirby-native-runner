@@ -2,6 +2,9 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+typedef NSUInteger MTLStages;
+typedef uint64_t MTLGPUAddress;
+
 @class MTL4CommandQueueDescriptor;
 @class MTL4CommandAllocatorDescriptor;
 @class MTL4ArgumentTableDescriptor;
@@ -108,6 +111,10 @@
 @end
 
 @interface MTL4ArgumentTableDescriptor : NSObject
+@property (nonatomic) NSUInteger maxBufferBindCount;
+@property (nonatomic) NSUInteger maxTextureBindCount;
+@property (nonatomic) NSUInteger maxSamplerBindCount;
+@property (nonatomic) NSUInteger maxSamplerStateBindCount;
 @end
 
 @interface MTL4LibraryDescriptor : NSObject
@@ -205,7 +212,23 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 @property (nonatomic) float lodBias;
 @end
 
+@protocol MTL4DeviceProtocol <MTLDevice>
+@optional
+- (id)newCommandBuffer;
+- (id<MTL4CommandQueue>)newMTL4CommandQueueWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTL4CommandAllocator>)newCommandAllocatorWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id)newCommandAllocator;
+- (id<MTL4ArgumentTable>)newArgumentTableWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTL4Compiler>)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTL4CounterHeap>)newCounterHeapWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTL4PipelineDataSetSerializer>)newPipelineDataSetSerializerWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id)newArchiveWithURL:(id)url error:(NSError **)error;
+@end
+
+#define MTLDevice MTL4DeviceProtocol
+
 @interface NSObject (MTL4DeviceExtensions)
+- (id)newCommandBuffer;
 - (id<MTL4CommandQueue>)newMTL4CommandQueueWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4CommandAllocator>)newCommandAllocatorWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4ArgumentTable>)newArgumentTableWithDescriptor:(id)descriptor error:(NSError **)error;

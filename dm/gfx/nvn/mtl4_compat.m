@@ -67,6 +67,17 @@
 @end
 
 @implementation NSObject (MTL4DeviceExtensions)
+- (id)newCommandBuffer {
+    if ([self respondsToSelector:@selector(commandBuffer)]) {
+        return [(id)self commandBuffer];
+    }
+    return [NSObject new];
+}
+
+- (id)newCommandAllocator {
+    return [NSObject new];
+}
+
 - (id)newMTL4CommandQueueWithDescriptor:(id)descriptor error:(NSError **)error {
     if ([self conformsToProtocol:@protocol(MTLDevice)]) {
         id<MTLDevice> dev = (id<MTLDevice>)self;
@@ -86,6 +97,18 @@
 
 - (id)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error {
     if (error) *error = [NSError errorWithDomain:@"MTL4" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Metal 4 compiler not supported on iOS 18"}];
+    return nil;
+}
+
+- (id)newCounterHeapWithDescriptor:(id)descriptor error:(NSError **)error {
+    return [NSObject new];
+}
+
+- (id)newPipelineDataSetSerializerWithDescriptor:(id)descriptor error:(NSError **)error {
+    return [NSObject new];
+}
+
+- (id)newArchiveWithURL:(id)url error:(NSError **)error {
     return nil;
 }
 @end
