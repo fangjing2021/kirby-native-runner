@@ -1,5 +1,6 @@
 // Common header of the native Switch host (multi-module).
 #pragma once
+#include <TargetConditionals.h>
 #include <pthread.h>
 #include <errno.h>
 #include <stdint.h>

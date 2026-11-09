@@ -52,6 +52,7 @@
 //   DM_CHEATS_ON=<n>,…      cheats turned on by name at launch (the menu's own toggle states stay what they were)
 //   DM_CHEATS_DEBUG=1       log every applied write (cheat name, where, value)
 #include "dm.h"
+#include <TargetConditionals.h>
 #include "dm_input.h"   // dm_cheats_keys, the key mask the type-8 conditional reads
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>

@@ -4,6 +4,7 @@
 // Touches only x16 / x17, which may be clobbered between calls; arguments and return values pass through unchanged. Stubs are written in a writable page and sealed read-only executable when loading ends (hlecount_seal).
 // svc is counted separately by number (the hle_svc.c dispatch entry calls hlecount_svc). Unavailable on iOS (code written at runtime cannot execute).
 #include "dm.h"
+#include <TargetConditionals.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
 #include <unistd.h>
