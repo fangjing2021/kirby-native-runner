@@ -3,5 +3,6 @@
 // (no Metal toolchain) is compiled from its source, through comp when there is one, else the device, with a [RED] line. Libraries are made once per device and name
 #pragma once
 #import <Metal/Metal.h>
+#import "mtl4_compat.h"
 
 id<MTLLibrary> host_msl_lib(id<MTLDevice> dev, id<MTL4Compiler> comp, const char *name, NSError **e);

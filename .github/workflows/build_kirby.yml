@@ -46,3 +46,11 @@ jobs:
           name: KirbyAndTheForgottenLand-ipa
           path: KirbyAndTheForgottenLand.ipa
           if-no-files-found: error
+
+      - name: Upload Build Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-failure-log
+          path: build/kirby-work/build/ios/pkg/build.log
+          if-no-files-found: ignore
