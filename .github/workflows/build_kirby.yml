@@ -1,0 +1,30 @@
+name: Build Kirby Native iOS IPA
+
+on:
+  push:
+    branches: [main, master, kirby-main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Kirby iOS IPA
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Build Script
+        run: |
+          bash scripts/ci_build_kirby.sh
+
+      - name: Upload Kirby IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KirbyAndTheForgottenLand-ipa
+          path: KirbyAndTheForgottenLand.ipa
+          if-no-files-found: error
