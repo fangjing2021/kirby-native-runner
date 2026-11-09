@@ -26,7 +26,7 @@ dotnet --info || true
 
 echo "=== 3. Install Build Tools ==="
 brew install xcodegen zstd
-pip3 install --break-system-packages fonttools backports.zstd capstone lz4 pillow
+pip3 install --break-system-packages fonttools capstone lz4 pillow
 
 echo "=== 4. Unpack Preprocessed Kirby Assets ==="
 mkdir -p build/kirby_shpkg build/patched_v65536 build/kirby_marker/mov/EventMovie
