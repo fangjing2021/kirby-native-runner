@@ -2,7 +2,14 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
-typedef NSUInteger MTLStages;
+typedef NS_OPTIONS(NSUInteger, MTLStages) {
+    MTLStageVertex   = (1UL << 0),
+    MTLStageMesh     = (1UL << 1),
+    MTLStageFragment = (1UL << 2),
+    MTLStageDispatch = (1UL << 3),
+    MTLStageBlit     = (1UL << 4),
+    MTLStageAll      = 0xFFFFFFFF,
+};
 typedef uint64_t MTLGPUAddress;
 
 @class MTL4CommandQueueDescriptor;
@@ -16,7 +23,7 @@ typedef uint64_t MTLGPUAddress;
 @class MTL4CompilerDescriptor;
 @class MTL4PipelineDescriptor;
 @class MTL4PipelineDataSetSerializerDescriptor;
-@class MTL4Archive;
+@protocol MTL4Archive;
 
 @protocol MTL4CommandEncoder <NSObject>
 - (void)endEncoding;
@@ -74,8 +81,11 @@ typedef uint64_t MTLGPUAddress;
 - (void)commit:(id const *)buffers count:(NSUInteger)count options:(id)options;
 - (void)commit:(id const *)buffers count:(NSUInteger)count;
 - (void)signalEvent:(id)event value:(uint64_t)value;
+- (void)waitForEvent:(id)event value:(uint64_t)value;
 - (void)waitForDrawable:(id)drawable;
 - (void)signalDrawable:(id)drawable;
+- (void)addResidencySet:(id)set;
+- (void)updateTextureMappings:(id)texture heap:(id)heap operations:(const void *)operations count:(NSUInteger)count;
 @end
 
 @protocol MTL4CommitFeedback <NSObject>
@@ -90,6 +100,7 @@ typedef uint64_t MTLGPUAddress;
 @end
 
 @protocol MTL4CounterHeap <NSObject>
+- (void)invalidateCounterRange:(NSRange)range;
 - (NSData *)resolveCounterRange:(NSRange)range;
 @end
 
@@ -152,7 +163,13 @@ typedef uint64_t MTLGPUAddress;
 @property (nonatomic) NSUInteger configuration;
 @end
 
-@interface MTL4Archive : NSObject
+@protocol MTL4Archive <NSObject>
+@optional
+- (id<MTLRenderPipelineState>)newRenderPipelineStateWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTLComputePipelineState>)newComputePipelineStateWithDescriptor:(id)descriptor error:(NSError **)error;
+@end
+
+@interface MTL4Archive : NSObject <MTL4Archive>
 @end
 
 @compatibility_alias MTL4RenderPassDescriptor MTLRenderPassDescriptor;
@@ -223,6 +240,7 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 - (id<MTL4CounterHeap>)newCounterHeapWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4PipelineDataSetSerializer>)newPipelineDataSetSerializerWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id)newArchiveWithURL:(id)url error:(NSError **)error;
+- (uint64_t)queryTimestampFrequency;
 @end
 
 #define MTLDevice MTL4DeviceProtocol
@@ -233,4 +251,5 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 - (id<MTL4CommandAllocator>)newCommandAllocatorWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4ArgumentTable>)newArgumentTableWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4Compiler>)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error;
+- (uint64_t)queryTimestampFrequency;
 @end

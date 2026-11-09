@@ -111,6 +111,10 @@
 - (id)newArchiveWithURL:(id)url error:(NSError **)error {
     return nil;
 }
+
+- (uint64_t)queryTimestampFrequency {
+    return 1000000000ULL;
+}
 @end
 
 @implementation NSObject (MTL4CompatObject)
@@ -149,7 +153,21 @@
 }
 - (void)waitForDrawable:(id)dr { (void)dr; }
 - (void)signalDrawable:(id)dr { (void)dr; }
+- (void)addResidencySet:(id)set { (void)set; }
+- (void)waitForEvent:(id)event value:(uint64_t)value { (void)event; (void)value; }
+- (void)updateTextureMappings:(id)texture heap:(id)heap operations:(const void *)operations count:(NSUInteger)count {
+    (void)texture; (void)heap; (void)operations; (void)count;
+}
 - (NSUInteger)allocatedSize { return 0; }
 - (void)reset {}
+- (void)invalidateCounterRange:(NSRange)range { (void)range; }
 - (NSData *)resolveCounterRange:(NSRange)range { (void)range; return nil; }
+- (id)newRenderPipelineStateWithDescriptor:(id)descriptor error:(NSError **)error {
+    if (error) *error = [NSError errorWithDomain:@"MTL4" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Archive not supported on iOS 18"}];
+    return nil;
+}
+- (id)newComputePipelineStateWithDescriptor:(id)descriptor error:(NSError **)error {
+    if (error) *error = [NSError errorWithDomain:@"MTL4" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Archive not supported on iOS 18"}];
+    return nil;
+}
 @end
