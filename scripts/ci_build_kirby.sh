@@ -13,6 +13,9 @@ elif [ -d /Applications/Xcode_16.app ]; then
 fi
 xcodebuild -version
 xcrun -sdk iphoneos metal --version
+xcodebuild -runFirstLaunch || true
+xcrun simctl list > /dev/null 2>&1 || true
+xcodebuild -downloadPlatform iOS || true
 
 echo "=== 2. Install .NET 10 Runtime ==="
 curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 || true

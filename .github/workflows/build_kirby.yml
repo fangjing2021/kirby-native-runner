@@ -18,6 +18,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache Compiled Shaders
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/ios/dmsh_b
+            build/shcache
+          key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz') }}
+
       - name: Run Build Script
         run: |
           bash scripts/ci_build_kirby.sh
