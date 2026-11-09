@@ -19,6 +19,7 @@
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_vi.h>
 #import <Metal/Metal.h>
+#import "../nvn/mtl4_compat.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach-o/getsect.h>

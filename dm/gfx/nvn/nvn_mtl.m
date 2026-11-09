@@ -616,12 +616,15 @@ void mtl_init(void) {
     // run-time shader capture needs (the NSP script's capture_shaders boots headless; GitHub issue #112: Balatro's capture aborted here)
     NSError *re = nil; const char *no4 = NULL;
     if (getenv("DM_TEST_NO_METAL4")) no4 = "DM_TEST_NO_METAL4";   // test switch: as on a virtual Mac; not set in the product
-    else if (![g_dev supportsFamily:MTLGPUFamilyMetal4]) no4 = "no Metal 4 GPU family";
+    else if (![g_dev supportsFamily:MTLGPUFamilyMetal4] && ![g_dev supportsFamily:MTLGPUFamilyMetal3]) no4 = "no Metal 3/4 GPU family";
     else {
         MTLResidencySetDescriptor *rd = [MTLResidencySetDescriptor new];
         rd.initialCapacity = 4096;
         g_res = [g_dev newResidencySetWithDescriptor:rd error:&re];
-        if (!g_res) no4 = "failed to create the MTLResidencySet";
+        if (!g_res) {
+            MLOG("[RED] residency set not supported: %s", re ? re.localizedDescription.UTF8String : "unknown");
+            re = nil;
+        }
     }
     if (!no4) {
         dispatch_queue_attr_t feedback_attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
@@ -642,8 +645,10 @@ void mtl_init(void) {
     // BC textures are created and uploaded as BC, with no decompression path (dm/gfx/tex/README.md); without BC the first one aborts in Metal's descriptor validation mid-game
     // (GitHub issue #704: an iPhone 15, A16). The iOS front end refuses such a device before the launcher (main.m); this stops every other route at the device, with the reason
     if (!g_dev.supportsBCTextureCompression) MDIE("the Metal device %s has no BC texture formats, which the games' textures use and the host does not decompress: an iPhone needs an A17 Pro or later, an iPad an M1 or later", g_dev.name.UTF8String);
-    [g_q addResidencySet:g_res];
-    [g_q4 addResidencySet:g_res];
+    if (g_res) {
+        [g_q addResidencySet:g_res];
+        [g_q4 addResidencySet:g_res];
+    }
     { void crash_set_wait_dump(void (*fn)(void)); void mtl_wait_state_dump(void); crash_set_wait_dump(mtl_wait_state_dump); }
     g_alloc_n = 3;
     for (int i = 0; i < 3; i++) {

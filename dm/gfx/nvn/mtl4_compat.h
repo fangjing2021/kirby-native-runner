@@ -7,6 +7,13 @@
 @class MTL4ArgumentTableDescriptor;
 @class MTL4LibraryDescriptor;
 @class MTL4CommitOptions;
+@class MTL4CounterHeapDescriptor;
+@class MTL4LibraryFunctionDescriptor;
+@class MTL4SpecializedFunctionDescriptor;
+@class MTL4CompilerDescriptor;
+@class MTL4PipelineDescriptor;
+@class MTL4PipelineDataSetSerializerDescriptor;
+@class MTL4Archive;
 
 @protocol MTL4CommandEncoder <NSObject>
 - (void)endEncoding;
@@ -49,6 +56,7 @@
 
 @protocol MTL4CommandAllocator <NSObject>
 @property (readonly) NSUInteger allocatedSize;
+- (void)reset;
 @end
 
 @protocol MTL4CommandBuffer <MTLCommandBuffer>
@@ -63,10 +71,32 @@
 - (void)commit:(id const *)buffers count:(NSUInteger)count options:(id)options;
 - (void)commit:(id const *)buffers count:(NSUInteger)count;
 - (void)signalEvent:(id)event value:(uint64_t)value;
+- (void)waitForDrawable:(id)drawable;
+- (void)signalDrawable:(id)drawable;
+@end
+
+@protocol MTL4CommitFeedback <NSObject>
+@property (readonly) NSError *error;
 @end
 
 @protocol MTL4Compiler <NSObject>
 - (id<MTLLibrary>)newLibraryWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTLRenderPipelineState>)newRenderPipelineStateWithDescriptor:(id)descriptor compilerTaskOptions:(id)options error:(NSError **)error;
+- (id<MTLComputePipelineState>)newComputePipelineStateWithDescriptor:(id)descriptor compilerTaskOptions:(id)options error:(NSError **)error;
+- (id<MTLRenderPipelineState>)newRenderPipelineStateBySpecializationWithDescriptor:(id)descriptor pipeline:(id)pipeline error:(NSError **)error;
+@end
+
+@protocol MTL4CounterHeap <NSObject>
+- (NSData *)resolveCounterRange:(NSRange)range;
+@end
+
+@protocol MTL4PipelineDataSetSerializer <NSObject>
+@end
+
+@protocol MTL4FXSpatialScaler <NSObject>
+@end
+
+@protocol MTL4FXTemporalScaler <NSObject>
 @end
 
 @interface MTL4CommandQueueDescriptor : NSObject
@@ -85,7 +115,49 @@
 @end
 
 @interface MTL4CommitOptions : NSObject
+- (void)addFeedbackHandler:(void (^)(id<MTL4CommitFeedback> feedback))handler;
 @end
+
+@interface MTL4CounterHeapDescriptor : NSObject
+@property (nonatomic) NSUInteger type;
+@property (nonatomic) NSUInteger count;
+@end
+
+@interface MTL4LibraryFunctionDescriptor : NSObject
+@property (nonatomic, strong) id<MTLLibrary> library;
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, strong) MTLFunctionConstantValues *constantValues;
+@end
+
+@interface MTL4SpecializedFunctionDescriptor : NSObject
+@property (nonatomic, strong) id functionDescriptor;
+@property (nonatomic, strong) MTLFunctionConstantValues *constantValues;
+@end
+
+@interface MTL4CompilerDescriptor : NSObject
+@property (nonatomic, strong) id pipelineDataSetSerializer;
+@end
+
+@interface MTL4PipelineDescriptor : NSObject
+@end
+
+@interface MTL4PipelineDataSetSerializerDescriptor : NSObject
+@property (nonatomic) NSUInteger configuration;
+@end
+
+@interface MTL4Archive : NSObject
+@end
+
+@compatibility_alias MTL4RenderPassDescriptor MTLRenderPassDescriptor;
+@compatibility_alias MTL4RenderPipelineDescriptor MTLRenderPipelineDescriptor;
+@compatibility_alias MTL4RenderPipelineColorAttachmentDescriptor MTLRenderPipelineColorAttachmentDescriptor;
+@compatibility_alias MTL4ComputePipelineDescriptor MTLComputePipelineDescriptor;
+@compatibility_alias MTL4MeshRenderPipelineDescriptor MTLMeshRenderPipelineDescriptor;
+@compatibility_alias MTL4FunctionDescriptor MTLFunctionDescriptor;
+
+typedef struct { uint64_t timestamp; } MTL4TimestampHeapEntry;
+typedef struct { NSUInteger mode; } MTL4UpdateSparseTextureMappingOperation;
+typedef NSUInteger MTL4CompilerTaskOptions;
 
 typedef NS_OPTIONS(NSUInteger, MTL4VisibilityOptions) {
     MTL4VisibilityOptionNone = 0,
@@ -96,6 +168,14 @@ typedef NS_OPTIONS(NSUInteger, MTL4VisibilityOptions) {
 typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
     MTL4TimestampGranularityRelaxed = 0,
 };
+
+#define MTL4AlphaToCoverageStateDisabled 0
+#define MTL4AlphaToCoverageStateEnabled 1
+#define MTL4BlendStateDisabled 0
+#define MTL4BlendStateEnabled 1
+#define MTL4BlendStateUnspecialized 2
+#define MTL4CounterHeapTypeTimestamp 0
+#define MTL4PipelineDataSetSerializerConfigurationCaptureBinaries 0
 
 #ifndef MTLGPUFamilyMetal4
 #define MTLGPUFamilyMetal4 ((MTLGPUFamily)5001)
@@ -108,8 +188,26 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 #define MTL4CommandQueueErrorNotPermitted 3
 #endif
 
+#ifndef MTLPixelFormatUnspecialized
+#define MTLPixelFormatUnspecialized ((MTLPixelFormat)999)
+#endif
+#ifndef MTLColorWriteMaskUnspecialized
+#define MTLColorWriteMaskUnspecialized ((MTLColorWriteMask)0xF)
+#endif
+#ifndef MTLBlendFactorUnspecialized
+#define MTLBlendFactorUnspecialized ((MTLBlendFactor)999)
+#endif
+#ifndef MTLBlendOperationUnspecialized
+#define MTLBlendOperationUnspecialized ((MTLBlendOperation)999)
+#endif
+
+@interface MTLSamplerDescriptor (Metal4Compat)
+@property (nonatomic) float lodBias;
+@end
+
 @interface NSObject (MTL4DeviceExtensions)
 - (id<MTL4CommandQueue>)newMTL4CommandQueueWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4CommandAllocator>)newCommandAllocatorWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4ArgumentTable>)newArgumentTableWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTL4Compiler>)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error;
 @end
