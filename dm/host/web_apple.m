@@ -24,162 +24,163 @@ typedef NSView DmView;
 void front_web_attach(DmView *box);   // front_mac.m / front_ios.m: puts the page's view over the game picture (main thread)
 void front_web_detach(DmView *box);   // and takes it away again, handing the keyboard focus back to the game
 
-static NSString *const SHIM = @R"JS(
-(function () {
-  if (window.__dm) return;
-  var cfg = window.__dm_cfg || {};
-  var post = function (m) { try { window.webkit.messageHandlers.dm.postMessage(m); } catch (e) {} };
-  ['log', 'warn', 'error'].forEach(function (k) {
-    var f = console[k];
-    console[k] = function () { post({k: 'log', d: k + ': ' + Array.prototype.map.call(arguments, String).join(' ')}); return f.apply(console, arguments); };
-  });
-  window.addEventListener('error', function (e) { post({k: 'log', d: 'error: ' + e.message + ' (' + e.filename + ':' + e.lineno + ')'}); });
-  var seen = {};
-  var noop = function (name) { return function () { if (!seen[name]) { seen[name] = 1; post({k: 'log', d: 'nx.' + name + ' is not implemented by the host; ignored'}); } }; };
-  var stub = function (o, prefix) {
-    return new Proxy(o, {get: function (t, p) { return p in t || typeof p !== 'string' || p === 'then' || p === 'toJSON' ? t[p] : noop(prefix + p); }});
-  };
-  // The footer's buttons: true = the browser's own action (B: back), false = none (unsetAssign), a function = the page's
-  var assign = {B: true};
-  var listeners = {};
-  var nx = {
-    addEventListener: function (t, f) { (listeners[t] = listeners[t] || []).push(f); },
-    removeEventListener: function (t, f) { listeners[t] = (listeners[t] || []).filter(function (x) { return x !== f; }); },
-    sendMessage: function (s) { post({k: 'msg', d: String(s)}); return true; },
-    endApplet: function () { post({k: 'end', r: 0}); },
-    setCursorScrollSpeed: function () {},
-    footer: stub({
-      setAssign: function (b, label, fn) { assign[b] = typeof fn === 'function' ? fn : true; },
-      unsetAssign: function (b) { assign[b] = false; },
-      setFixed: function () {}
-    }, 'footer.')
-  };
-  window.nx = stub(nx, '');
-
-  // Sounds follow the host's audio: muted, every connection to the speakers goes through a gain of 0 (the sounds still play and end, for pages that wait for them)
-  if (cfg.muted && window.AudioNode) {
-    var connect = AudioNode.prototype.connect, quiet = new WeakMap();
-    AudioNode.prototype.connect = function (dst) {
-      if (dst instanceof AudioDestinationNode) {
-        var g = quiet.get(dst.context);
-        if (!g) { g = dst.context.createGain(); g.gain.value = 0; connect.call(g, dst); quiet.set(dst.context, g); }
-        arguments[0] = g;
-      }
-      return connect.apply(this, arguments);
-    };
-    document.addEventListener('play', function (e) { e.target.muted = true; }, true);
-  }
-  // The page's look as on the Switch: no focus ring when it asks for none, a sans-serif default with the button icons of the Nintendo extension font (the host's stand-in,
-  // at their private-use code points), and its :focus rules on the focused element whether or not the window is focused (WebKit matches :focus only in the key window,
-  // and on the iPhone the web view never takes the keyboard): each such rule is copied for [data-dm-focus], which follows the focus
-  var style = function () {
-    var m = document.querySelector('meta[name="focus-ring-visibility"]'), s = document.createElement('style');
-    s.textContent = '@font-face{font-family:"dm-nx-ext";src:url("/__dm_font/nintendo_ext.ttf");unicode-range:U+E000-E1FF}' +
-      'html{font-family:"dm-nx-ext",-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;-webkit-touch-callout:none}' +
-      (m && m.content === 'hidden' ? ':focus,[data-dm-focus]{outline:none!important}' : '');
-    (document.head || document.documentElement).insertBefore(s, (document.head || document.documentElement).firstChild);
-  };
-  var mark = function (el) {
-    var o = document.querySelectorAll('[data-dm-focus]');
-    for (var i = 0; i < o.length; i++) if (o[i] !== el) o[i].removeAttribute('data-dm-focus');
-    if (el && el !== document.body && el !== document.documentElement && el.setAttribute) el.setAttribute('data-dm-focus', '');
-  };
-  var mirror = function () {
-    var out = [];
-    var walk = function (rules) {
-      for (var i = 0; i < rules.length; i++) {
-        var r = rules[i];
-        if (r.selectorText && r.selectorText.indexOf(':focus') >= 0) out.push(r.cssText.replace(/:focus(?![-\w])/g, '[data-dm-focus]'));
-        else if (r.cssRules && r.media) { var k = out.length; walk(r.cssRules); if (out.length > k) out.splice(k, 0, '@media ' + r.media.mediaText + '{'), out.push('}'); }
-      }
-    };
-    for (var i = 0; i < document.styleSheets.length; i++) { try { walk(document.styleSheets[i].cssRules); } catch (e) {} }
-    var s = document.createElement('style'); s.textContent = out.join('\n'); document.head.appendChild(s);
-    mark(document.activeElement);
-  };
-  document.addEventListener('focus', function (e) { mark(e.target); }, true);
-  document.addEventListener('blur', function () { setTimeout(function () { mark(document.activeElement); }, 0); }, true);
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', style); else style();
-  window.addEventListener('load', mirror);
-
-  // The controller: host bits (nn::hid::NpadButton: A0 B1 X2 Y3 LS4 RS5 L6 R7 ZL8 ZR9 +10 −11 left12 up13 right14 down15) in the standard mapping's order
-  var STD = [1, 0, 3, 2, 6, 7, 8, 9, 11, 10, 4, 5, 13, 15, 12, 14];
-  var cur = 0, unread = 0, axes = [0, 0, 0, 0];
-  var pad = function () {
-    var b = cur | unread; unread = 0;
-    return {id: 'Nintendo Switch Controller', index: 0, connected: true, mapping: 'standard', timestamp: performance.now(),
-            buttons: STD.map(function (k) { var p = (b >> k & 1) === 1; return {pressed: p, touched: p, value: p ? 1 : 0}; }), axes: axes.slice()};
-  };
-  try { Object.defineProperty(Navigator.prototype, 'getGamepads', {configurable: true, value: function () { return [pad(), null, null, null]; }}); } catch (e) {}
-
-  var KEYS = {37: ['ArrowLeft', 'ArrowLeft'], 38: ['ArrowUp', 'ArrowUp'], 39: ['ArrowRight', 'ArrowRight'], 40: ['ArrowDown', 'ArrowDown'], 32: [' ', 'Space']};
-  var target = function () { var a = document.activeElement; return a && a !== document.documentElement ? a : document.body || document.documentElement; };
-  var key = function (type, code, repeat, at) {
-    var e = new KeyboardEvent(type, {key: KEYS[code][0], code: KEYS[code][1], bubbles: true, cancelable: true, repeat: !!repeat});
-    Object.defineProperty(e, 'keyCode', {get: function () { return code; }});
-    Object.defineProperty(e, 'which', {get: function () { return code; }});
-    var t = at || target(), r = t.dispatchEvent(e);
-    if (cfg.debug && type === 'keydown') { var a = document.activeElement; post({k: 'log', d: 'key ' + code + ' at ' + (t.id || t.tagName) + ' -> focus ' + (a && (a.id || a.tagName)) + (a && a.matches(':focus') ? ' (:focus)' : ' (not :focus)') + ' hasFocus ' + document.hasFocus()}); }
-    return r;
-  };
-  var clickable = function (el) { return el && el.closest && el.closest('a[href],button,input,select,textarea,label,summary,[onclick]'); };
-  var pressA = function (at, fromClick) {
-    var el = at || target(), go = key('keydown', 32, false, el);
-    key('keyup', 32, false, el);
-    if (go && !fromClick && clickable(el)) el.click();
-  };
-  var footer = function (b) {
-    var a = assign[b];
-    if (typeof a === 'function') { a(); return; }
-    if (a !== true || b !== 'B') return;
-    if (history.length > 1) history.back(); else post({k: 'end', r: 1});
-  };
-  // Arrow keys from the D-pad and the left stick (half way), repeated after `delay` frames every `pulse` frames while held
-  var DIRS = [[37, 12, 0, -1], [38, 13, 1, -1], [39, 14, 0, 1], [40, 15, 1, 1]];   // key, host bit, axis, its sign (the page's axes: right and down positive)
-  var delay = cfg.repeat_delay || 30, pulse = cfg.repeat_pulse || 6, held = {};
-  var dirs = function (b) {
-    var d = 0;
-    DIRS.forEach(function (x, i) { if ((b >> x[1] & 1) || axes[x[2]] * x[3] > 0.5) d |= 1 << i; });
-    return d;
-  };
-  var lastDirs = 0;
-  window.__dm = {
-    pad: function (b, lx, ly, rx, ry) {
-      var was = cur, down = b & ~was;
-      cur = b; unread |= down;
-      axes = [lx / 32767, -ly / 32767, rx / 32767, -ry / 32767];
-      var d = dirs(b), now = performance.now();
-      DIRS.forEach(function (x, i) {
-        var on = d >> i & 1, before = lastDirs >> i & 1;
-        if (on && !before) { held[x[0]] = now + delay * 1000 / 60; key('keydown', x[0]); }
-        if (!on && before) { delete held[x[0]]; key('keyup', x[0]); }
-      });
-      lastDirs = d;
-      if (down & 1) pressA();
-      if (down & 2) footer('B');
-      if (down & 4) footer('X');
-      if (down & 8) footer('Y');
-      if (down & 0x400) footer('Plus');
-      if (down & 0x800) footer('Minus');
-    },
-    recv: function (s) { (listeners.message || []).forEach(function (f) { try { f({type: 'message', data: s}); } catch (e) { console.error(e && e.message); } }); },
-    show: function () { lastDirs = 0; held = {}; cur = unread = 0; }
-  };
-  var tick = function () {
-    var now = performance.now();
-    Object.keys(held).forEach(function (k) { if (now >= held[k]) { held[k] = now + pulse * 1000 / 60; key('keydown', +k, true); } });
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-  // A click or a touch: what it lands on takes the focus and A is pressed there (pages made for the controller act on A alone)
-  document.addEventListener('click', function (e) {
-    var el = clickable(e.target) || (e.target && e.target.closest && e.target.closest('[tabindex]'));
-    if (!e.isTrusted || !el) return;
-    if (el.focus) el.focus();
-    pressA(el, true);
-  }, true);
-})();
-)JS";
+static NSString *const SHIM =
+@"\n"
+@"(function () {\n"
+@"  if (window.__dm) return;\n"
+@"  var cfg = window.__dm_cfg || {};\n"
+@"  var post = function (m) { try { window.webkit.messageHandlers.dm.postMessage(m); } catch (e) {} };\n"
+@"  ['log', 'warn', 'error'].forEach(function (k) {\n"
+@"    var f = console[k];\n"
+@"    console[k] = function () { post({k: 'log', d: k + ': ' + Array.prototype.map.call(arguments, String).join(' ')}); return f.apply(console, arguments); };\n"
+@"  });\n"
+@"  window.addEventListener('error', function (e) { post({k: 'log', d: 'error: ' + e.message + ' (' + e.filename + ':' + e.lineno + ')'}); });\n"
+@"  var seen = {};\n"
+@"  var noop = function (name) { return function () { if (!seen[name]) { seen[name] = 1; post({k: 'log', d: 'nx.' + name + ' is not implemented by the host; ignored'}); } }; };\n"
+@"  var stub = function (o, prefix) {\n"
+@"    return new Proxy(o, {get: function (t, p) { return p in t || typeof p !== 'string' || p === 'then' || p === 'toJSON' ? t[p] : noop(prefix + p); }});\n"
+@"  };\n"
+@"  // The footer's buttons: true = the browser's own action (B: back), false = none (unsetAssign), a function = the page's\n"
+@"  var assign = {B: true};\n"
+@"  var listeners = {};\n"
+@"  var nx = {\n"
+@"    addEventListener: function (t, f) { (listeners[t] = listeners[t] || []).push(f); },\n"
+@"    removeEventListener: function (t, f) { listeners[t] = (listeners[t] || []).filter(function (x) { return x !== f; }); },\n"
+@"    sendMessage: function (s) { post({k: 'msg', d: String(s)}); return true; },\n"
+@"    endApplet: function () { post({k: 'end', r: 0}); },\n"
+@"    setCursorScrollSpeed: function () {},\n"
+@"    footer: stub({\n"
+@"      setAssign: function (b, label, fn) { assign[b] = typeof fn === 'function' ? fn : true; },\n"
+@"      unsetAssign: function (b) { assign[b] = false; },\n"
+@"      setFixed: function () {}\n"
+@"    }, 'footer.')\n"
+@"  };\n"
+@"  window.nx = stub(nx, '');\n"
+@"\n"
+@"  // Sounds follow the host's audio: muted, every connection to the speakers goes through a gain of 0 (the sounds still play and end, for pages that wait for them)\n"
+@"  if (cfg.muted && window.AudioNode) {\n"
+@"    var connect = AudioNode.prototype.connect, quiet = new WeakMap();\n"
+@"    AudioNode.prototype.connect = function (dst) {\n"
+@"      if (dst instanceof AudioDestinationNode) {\n"
+@"        var g = quiet.get(dst.context);\n"
+@"        if (!g) { g = dst.context.createGain(); g.gain.value = 0; connect.call(g, dst); quiet.set(dst.context, g); }\n"
+@"        arguments[0] = g;\n"
+@"      }\n"
+@"      return connect.apply(this, arguments);\n"
+@"    };\n"
+@"    document.addEventListener('play', function (e) { e.target.muted = true; }, true);\n"
+@"  }\n"
+@"  // The page's look as on the Switch: no focus ring when it asks for none, a sans-serif default with the button icons of the Nintendo extension font (the host's stand-in,\n"
+@"  // at their private-use code points), and its :focus rules on the focused element whether or not the window is focused (WebKit matches :focus only in the key window,\n"
+@"  // and on the iPhone the web view never takes the keyboard): each such rule is copied for [data-dm-focus], which follows the focus\n"
+@"  var style = function () {\n"
+@"    var m = document.querySelector('meta[name=\"focus-ring-visibility\"]'), s = document.createElement('style');\n"
+@"    s.textContent = '@font-face{font-family:\"dm-nx-ext\";src:url(\"/__dm_font/nintendo_ext.ttf\");unicode-range:U+E000-E1FF}' +\n"
+@"      'html{font-family:\"dm-nx-ext\",-apple-system,\"Helvetica Neue\",Helvetica,Arial,sans-serif;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;-webkit-touch-callout:none}' +\n"
+@"      (m && m.content === 'hidden' ? ':focus,[data-dm-focus]{outline:none!important}' : '');\n"
+@"    (document.head || document.documentElement).insertBefore(s, (document.head || document.documentElement).firstChild);\n"
+@"  };\n"
+@"  var mark = function (el) {\n"
+@"    var o = document.querySelectorAll('[data-dm-focus]');\n"
+@"    for (var i = 0; i < o.length; i++) if (o[i] !== el) o[i].removeAttribute('data-dm-focus');\n"
+@"    if (el && el !== document.body && el !== document.documentElement && el.setAttribute) el.setAttribute('data-dm-focus', '');\n"
+@"  };\n"
+@"  var mirror = function () {\n"
+@"    var out = [];\n"
+@"    var walk = function (rules) {\n"
+@"      for (var i = 0; i < rules.length; i++) {\n"
+@"        var r = rules[i];\n"
+@"        if (r.selectorText && r.selectorText.indexOf(':focus') >= 0) out.push(r.cssText.replace(/:focus(?![-\\w])/g, '[data-dm-focus]'));\n"
+@"        else if (r.cssRules && r.media) { var k = out.length; walk(r.cssRules); if (out.length > k) out.splice(k, 0, '@media ' + r.media.mediaText + '{'), out.push('}'); }\n"
+@"      }\n"
+@"    };\n"
+@"    for (var i = 0; i < document.styleSheets.length; i++) { try { walk(document.styleSheets[i].cssRules); } catch (e) {} }\n"
+@"    var s = document.createElement('style'); s.textContent = out.join('\\n'); document.head.appendChild(s);\n"
+@"    mark(document.activeElement);\n"
+@"  };\n"
+@"  document.addEventListener('focus', function (e) { mark(e.target); }, true);\n"
+@"  document.addEventListener('blur', function () { setTimeout(function () { mark(document.activeElement); }, 0); }, true);\n"
+@"  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', style); else style();\n"
+@"  window.addEventListener('load', mirror);\n"
+@"\n"
+@"  // The controller: host bits (nn::hid::NpadButton: A0 B1 X2 Y3 LS4 RS5 L6 R7 ZL8 ZR9 +10 −11 left12 up13 right14 down15) in the standard mapping's order\n"
+@"  var STD = [1, 0, 3, 2, 6, 7, 8, 9, 11, 10, 4, 5, 13, 15, 12, 14];\n"
+@"  var cur = 0, unread = 0, axes = [0, 0, 0, 0];\n"
+@"  var pad = function () {\n"
+@"    var b = cur | unread; unread = 0;\n"
+@"    return {id: 'Nintendo Switch Controller', index: 0, connected: true, mapping: 'standard', timestamp: performance.now(),\n"
+@"            buttons: STD.map(function (k) { var p = (b >> k & 1) === 1; return {pressed: p, touched: p, value: p ? 1 : 0}; }), axes: axes.slice()};\n"
+@"  };\n"
+@"  try { Object.defineProperty(Navigator.prototype, 'getGamepads', {configurable: true, value: function () { return [pad(), null, null, null]; }}); } catch (e) {}\n"
+@"\n"
+@"  var KEYS = {37: ['ArrowLeft', 'ArrowLeft'], 38: ['ArrowUp', 'ArrowUp'], 39: ['ArrowRight', 'ArrowRight'], 40: ['ArrowDown', 'ArrowDown'], 32: [' ', 'Space']};\n"
+@"  var target = function () { var a = document.activeElement; return a && a !== document.documentElement ? a : document.body || document.documentElement; };\n"
+@"  var key = function (type, code, repeat, at) {\n"
+@"    var e = new KeyboardEvent(type, {key: KEYS[code][0], code: KEYS[code][1], bubbles: true, cancelable: true, repeat: !!repeat});\n"
+@"    Object.defineProperty(e, 'keyCode', {get: function () { return code; }});\n"
+@"    Object.defineProperty(e, 'which', {get: function () { return code; }});\n"
+@"    var t = at || target(), r = t.dispatchEvent(e);\n"
+@"    if (cfg.debug && type === 'keydown') { var a = document.activeElement; post({k: 'log', d: 'key ' + code + ' at ' + (t.id || t.tagName) + ' -> focus ' + (a && (a.id || a.tagName)) + (a && a.matches(':focus') ? ' (:focus)' : ' (not :focus)') + ' hasFocus ' + document.hasFocus()}); }\n"
+@"    return r;\n"
+@"  };\n"
+@"  var clickable = function (el) { return el && el.closest && el.closest('a[href],button,input,select,textarea,label,summary,[onclick]'); };\n"
+@"  var pressA = function (at, fromClick) {\n"
+@"    var el = at || target(), go = key('keydown', 32, false, el);\n"
+@"    key('keyup', 32, false, el);\n"
+@"    if (go && !fromClick && clickable(el)) el.click();\n"
+@"  };\n"
+@"  var footer = function (b) {\n"
+@"    var a = assign[b];\n"
+@"    if (typeof a === 'function') { a(); return; }\n"
+@"    if (a !== true || b !== 'B') return;\n"
+@"    if (history.length > 1) history.back(); else post({k: 'end', r: 1});\n"
+@"  };\n"
+@"  // Arrow keys from the D-pad and the left stick (half way), repeated after `delay` frames every `pulse` frames while held\n"
+@"  var DIRS = [[37, 12, 0, -1], [38, 13, 1, -1], [39, 14, 0, 1], [40, 15, 1, 1]];   // key, host bit, axis, its sign (the page's axes: right and down positive)\n"
+@"  var delay = cfg.repeat_delay || 30, pulse = cfg.repeat_pulse || 6, held = {};\n"
+@"  var dirs = function (b) {\n"
+@"    var d = 0;\n"
+@"    DIRS.forEach(function (x, i) { if ((b >> x[1] & 1) || axes[x[2]] * x[3] > 0.5) d |= 1 << i; });\n"
+@"    return d;\n"
+@"  };\n"
+@"  var lastDirs = 0;\n"
+@"  window.__dm = {\n"
+@"    pad: function (b, lx, ly, rx, ry) {\n"
+@"      var was = cur, down = b & ~was;\n"
+@"      cur = b; unread |= down;\n"
+@"      axes = [lx / 32767, -ly / 32767, rx / 32767, -ry / 32767];\n"
+@"      var d = dirs(b), now = performance.now();\n"
+@"      DIRS.forEach(function (x, i) {\n"
+@"        var on = d >> i & 1, before = lastDirs >> i & 1;\n"
+@"        if (on && !before) { held[x[0]] = now + delay * 1000 / 60; key('keydown', x[0]); }\n"
+@"        if (!on && before) { delete held[x[0]]; key('keyup', x[0]); }\n"
+@"      });\n"
+@"      lastDirs = d;\n"
+@"      if (down & 1) pressA();\n"
+@"      if (down & 2) footer('B');\n"
+@"      if (down & 4) footer('X');\n"
+@"      if (down & 8) footer('Y');\n"
+@"      if (down & 0x400) footer('Plus');\n"
+@"      if (down & 0x800) footer('Minus');\n"
+@"    },\n"
+@"    recv: function (s) { (listeners.message || []).forEach(function (f) { try { f({type: 'message', data: s}); } catch (e) { console.error(e && e.message); } }); },\n"
+@"    show: function () { lastDirs = 0; held = {}; cur = unread = 0; }\n"
+@"  };\n"
+@"  var tick = function () {\n"
+@"    var now = performance.now();\n"
+@"    Object.keys(held).forEach(function (k) { if (now >= held[k]) { held[k] = now + pulse * 1000 / 60; key('keydown', +k, true); } });\n"
+@"    requestAnimationFrame(tick);\n"
+@"  };\n"
+@"  requestAnimationFrame(tick);\n"
+@"  // A click or a touch: what it lands on takes the focus and A is pressed there (pages made for the controller act on A alone)\n"
+@"  document.addEventListener('click', function (e) {\n"
+@"    var el = clickable(e.target) || (e.target && e.target.closest && e.target.closest('[tabindex]'));\n"
+@"    if (!e.isTrusted || !el) return;\n"
+@"    if (el.focus) el.focus();\n"
+@"    pressA(el, true);\n"
+@"  }, true);\n"
+@"})();\n"
+@"\n";
 
 @interface DmWebBox : DmView <WKNavigationDelegate>
 @property (nonatomic, strong) WKWebView *web;
