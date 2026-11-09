@@ -18,8 +18,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Cache Compiled Shaders
-        uses: actions/cache@v4
+      - name: Restore Compiled Shaders Cache
+        uses: actions/cache/restore@v4
+        id: shader-cache
         with:
           path: |
             build/ios/dmsh_b
@@ -29,6 +30,15 @@ jobs:
       - name: Run Build Script
         run: |
           bash scripts/ci_build_kirby.sh
+
+      - name: Save Compiled Shaders Cache
+        uses: actions/cache/save@v4
+        if: always() && steps.shader-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            build/ios/dmsh_b
+            build/shcache
+          key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz') }}
 
       - name: Upload Kirby IPA Artifact
         uses: actions/upload-artifact@v4
