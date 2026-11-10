@@ -285,6 +285,10 @@ typedef NS_ENUM(NSUInteger, MTLSamplerReductionMode) {
 @property (nonatomic) NSUInteger placementSparsePageSize;
 @end
 
+@interface CAMetalLayer (Metal4Compat)
+@property (nonatomic, strong, readonly) id residencySet;
+@end
+
 @interface MTLComputePipelineDescriptor (Metal4Compat)
 @property (nonatomic, strong) id computeFunctionDescriptor;
 @end

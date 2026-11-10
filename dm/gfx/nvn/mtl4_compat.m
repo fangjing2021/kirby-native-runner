@@ -54,6 +54,12 @@
 }
 @end
 
+@implementation CAMetalLayer (Metal4Compat)
+- (id)residencySet {
+    return nil;
+}
+@end
+
 @implementation MTLFXSpatialScalerDescriptor (Metal4Compat)
 + (BOOL)supportsMetal4FX:(id<MTLDevice>)device {
     (void)device;
@@ -254,6 +260,7 @@
     return YES;
 }
 - (void)encodeToCommandBuffer:(id)commandBuffer { (void)commandBuffer; }
+- (id)residencySet { return nil; }
 - (NSUInteger)allocatedSize { return 0; }
 - (void)reset {}
 - (void)invalidateCounterRange:(NSRange)range { (void)range; }
