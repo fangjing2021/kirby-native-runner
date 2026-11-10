@@ -113,11 +113,43 @@ typedef uint64_t MTLGPUAddress;
 
 @protocol MTL4FXSpatialScaler <NSObject>
 @optional
+@property (nonatomic) NSUInteger colorTextureUsage;
+@property (nonatomic) NSUInteger outputTextureUsage;
+@property (nonatomic, strong) id<MTLTexture> colorTexture;
+@property (nonatomic, strong) id<MTLTexture> outputTexture;
+@property (nonatomic) NSUInteger inputContentWidth;
+@property (nonatomic) NSUInteger inputContentHeight;
 - (void)encodeToCommandBuffer:(id)commandBuffer;
 @end
 
 @protocol MTL4FXTemporalScaler <NSObject>
 @optional
+@property (nonatomic) NSUInteger colorTextureUsage;
+@property (nonatomic) NSUInteger depthTextureUsage;
+@property (nonatomic) NSUInteger motionTextureUsage;
+@property (nonatomic) NSUInteger outputTextureUsage;
+@property (nonatomic, strong) id<MTLTexture> colorTexture;
+@property (nonatomic, strong) id<MTLTexture> depthTexture;
+@property (nonatomic, strong) id<MTLTexture> motionTexture;
+@property (nonatomic, strong) id<MTLTexture> outputTexture;
+@property (nonatomic, strong) id<MTLTexture> exposureTexture;
+@property (nonatomic) NSUInteger inputContentWidth;
+@property (nonatomic) NSUInteger inputContentHeight;
+@property (nonatomic) NSUInteger colorContentOffsetX;
+@property (nonatomic) NSUInteger colorContentOffsetY;
+@property (nonatomic) NSUInteger depthContentOffsetX;
+@property (nonatomic) NSUInteger depthContentOffsetY;
+@property (nonatomic) NSUInteger motionContentOffsetX;
+@property (nonatomic) NSUInteger motionContentOffsetY;
+@property (nonatomic) NSUInteger outputOffsetX;
+@property (nonatomic) NSUInteger outputOffsetY;
+@property (nonatomic) float motionVectorScaleX;
+@property (nonatomic) float motionVectorScaleY;
+@property (nonatomic) float jitterOffsetX;
+@property (nonatomic) float jitterOffsetY;
+@property (nonatomic) float preExposure;
+@property (nonatomic) BOOL depthReversed;
+@property (nonatomic) BOOL reset;
 - (void)encodeToCommandBuffer:(id)commandBuffer;
 @end
 
@@ -257,8 +289,21 @@ typedef NS_ENUM(NSUInteger, MTLSamplerReductionMode) {
 @property (nonatomic, strong) id computeFunctionDescriptor;
 @end
 
+@interface MTLRenderPipelineColorAttachmentDescriptor (Metal4Compat)
+@property (nonatomic) NSUInteger blendingState;
+@end
+
+@interface MTLRenderPipelineDescriptor (Metal4Compat)
+@property (nonatomic, strong) id vertexFunctionDescriptor;
+@property (nonatomic, strong) id fragmentFunctionDescriptor;
+@property (nonatomic) NSUInteger alphaToCoverageState;
+@end
+
 @interface MTLMeshRenderPipelineDescriptor (Metal4Compat)
 @property (nonatomic, strong) id meshFunctionDescriptor;
+@property (nonatomic, strong) id fragmentFunctionDescriptor;
+@property (nonatomic, strong) id objectFunctionDescriptor;
+@property (nonatomic) NSUInteger alphaToCoverageState;
 @end
 
 #if __has_include(<MetalFX/MetalFX.h>)
@@ -293,6 +338,7 @@ typedef NS_ENUM(NSUInteger, MTLSamplerReductionMode) {
 - (id<MTL4PipelineDataSetSerializer>)newPipelineDataSetSerializerWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id)newArchiveWithURL:(id)url error:(NSError **)error;
 - (uint64_t)queryTimestampFrequency;
+@property (readonly) NSUInteger maximumConcurrentCompilationTaskCount;
 @end
 
 #define MTLDevice MTL4DeviceProtocol
@@ -305,4 +351,5 @@ typedef NS_ENUM(NSUInteger, MTLSamplerReductionMode) {
 - (id<MTL4Compiler>)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4PipelineDataSetSerializer>)newPipelineDataSetSerializerWithDescriptor:(id)descriptor;
 - (uint64_t)queryTimestampFrequency;
+@property (readonly) NSUInteger maximumConcurrentCompilationTaskCount;
 @end

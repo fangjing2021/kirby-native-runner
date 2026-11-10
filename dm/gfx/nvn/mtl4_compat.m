@@ -129,6 +129,10 @@
 - (uint64_t)queryTimestampFrequency {
     return 1000000000ULL;
 }
+
+- (NSUInteger)maximumConcurrentCompilationTaskCount {
+    return 0;
+}
 @end
 
 @implementation NSObject (MTL4CompatObject)
@@ -184,6 +188,67 @@
 - (void)setComputeFunctionDescriptor:(id)fd { (void)fd; }
 - (id)meshFunctionDescriptor { return nil; }
 - (void)setMeshFunctionDescriptor:(id)fd { (void)fd; }
+- (id)vertexFunctionDescriptor { return nil; }
+- (void)setVertexFunctionDescriptor:(id)fd { (void)fd; }
+- (id)fragmentFunctionDescriptor { return nil; }
+- (void)setFragmentFunctionDescriptor:(id)fd { (void)fd; }
+- (id)objectFunctionDescriptor { return nil; }
+- (void)setObjectFunctionDescriptor:(id)fd { (void)fd; }
+- (NSUInteger)alphaToCoverageState { return 0; }
+- (void)setAlphaToCoverageState:(NSUInteger)state { (void)state; }
+- (NSUInteger)blendingState { return 0; }
+- (void)setBlendingState:(NSUInteger)state { (void)state; }
+- (NSUInteger)colorTextureUsage { return 0; }
+- (void)setColorTextureUsage:(NSUInteger)u { (void)u; }
+- (NSUInteger)depthTextureUsage { return 0; }
+- (void)setDepthTextureUsage:(NSUInteger)u { (void)u; }
+- (NSUInteger)motionTextureUsage { return 0; }
+- (void)setMotionTextureUsage:(NSUInteger)u { (void)u; }
+- (NSUInteger)outputTextureUsage { return 0; }
+- (void)setOutputTextureUsage:(NSUInteger)u { (void)u; }
+- (id)colorTexture { return nil; }
+- (void)setColorTexture:(id)t { (void)t; }
+- (id)depthTexture { return nil; }
+- (void)setDepthTexture:(id)t { (void)t; }
+- (id)motionTexture { return nil; }
+- (void)setMotionTexture:(id)t { (void)t; }
+- (id)outputTexture { return nil; }
+- (void)setOutputTexture:(id)t { (void)t; }
+- (id)exposureTexture { return nil; }
+- (void)setExposureTexture:(id)t { (void)t; }
+- (NSUInteger)inputContentWidth { return 0; }
+- (void)setInputContentWidth:(NSUInteger)w { (void)w; }
+- (NSUInteger)inputContentHeight { return 0; }
+- (void)setInputContentHeight:(NSUInteger)h { (void)h; }
+- (NSUInteger)colorContentOffsetX { return 0; }
+- (void)setColorContentOffsetX:(NSUInteger)x { (void)x; }
+- (NSUInteger)colorContentOffsetY { return 0; }
+- (void)setColorContentOffsetY:(NSUInteger)y { (void)y; }
+- (NSUInteger)depthContentOffsetX { return 0; }
+- (void)setDepthContentOffsetX:(NSUInteger)x { (void)x; }
+- (NSUInteger)depthContentOffsetY { return 0; }
+- (void)setDepthContentOffsetY:(NSUInteger)y { (void)y; }
+- (NSUInteger)motionContentOffsetX { return 0; }
+- (void)setMotionContentOffsetX:(NSUInteger)x { (void)x; }
+- (NSUInteger)motionContentOffsetY { return 0; }
+- (void)setMotionContentOffsetY:(NSUInteger)y { (void)y; }
+- (NSUInteger)outputOffsetX { return 0; }
+- (void)setOutputOffsetX:(NSUInteger)x { (void)x; }
+- (NSUInteger)outputOffsetY { return 0; }
+- (void)setOutputOffsetY:(NSUInteger)y { (void)y; }
+- (float)motionVectorScaleX { return 0.0f; }
+- (void)setMotionVectorScaleX:(float)s { (void)s; }
+- (float)motionVectorScaleY { return 0.0f; }
+- (void)setMotionVectorScaleY:(float)s { (void)s; }
+- (float)jitterOffsetX { return 0.0f; }
+- (void)setJitterOffsetX:(float)o { (void)o; }
+- (float)jitterOffsetY { return 0.0f; }
+- (void)setJitterOffsetY:(float)o { (void)o; }
+- (float)preExposure { return 0.0f; }
+- (void)setPreExposure:(float)p { (void)p; }
+- (BOOL)depthReversed { return NO; }
+- (void)setDepthReversed:(BOOL)r { (void)r; }
+- (void)setReset:(BOOL)r { (void)r; }
 - (BOOL)serializeAsArchiveAndFlushToURL:(NSURL *)url error:(NSError **)error {
     (void)url; (void)error;
     return YES;
