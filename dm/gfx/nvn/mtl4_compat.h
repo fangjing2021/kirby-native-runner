@@ -90,6 +90,8 @@ typedef uint64_t MTLGPUAddress;
 
 @protocol MTL4CommitFeedback <NSObject>
 @property (readonly) NSError *error;
+@property (readonly) double GPUStartTime;
+@property (readonly) double GPUEndTime;
 @end
 
 @protocol MTL4Compiler <NSObject>
@@ -105,12 +107,18 @@ typedef uint64_t MTLGPUAddress;
 @end
 
 @protocol MTL4PipelineDataSetSerializer <NSObject>
+@optional
+- (BOOL)serializeAsArchiveAndFlushToURL:(NSURL *)url error:(NSError **)error;
 @end
 
 @protocol MTL4FXSpatialScaler <NSObject>
+@optional
+- (void)encodeToCommandBuffer:(id)commandBuffer;
 @end
 
 @protocol MTL4FXTemporalScaler <NSObject>
+@optional
+- (void)encodeToCommandBuffer:(id)commandBuffer;
 @end
 
 @interface MTL4CommandQueueDescriptor : NSObject
@@ -225,8 +233,51 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 #define MTLBlendOperationUnspecialized ((MTLBlendOperation)999)
 #endif
 
+typedef NS_ENUM(NSUInteger, MTLSamplerReductionMode) {
+    MTLSamplerReductionModeStandard = 0,
+    MTLSamplerReductionModeComparison = 1,
+    MTLSamplerReductionModeMinimum = 2,
+    MTLSamplerReductionModeMaximum = 3,
+};
+
 @interface MTLSamplerDescriptor (Metal4Compat)
 @property (nonatomic) float lodBias;
+@property (nonatomic) MTLSamplerReductionMode reductionMode;
+@end
+
+@interface MTLHeapDescriptor (Metal4Compat)
+@property (nonatomic) NSUInteger maxCompatiblePlacementSparsePageSize;
+@end
+
+@interface MTLTextureDescriptor (Metal4Compat)
+@property (nonatomic) NSUInteger placementSparsePageSize;
+@end
+
+@interface MTLComputePipelineDescriptor (Metal4Compat)
+@property (nonatomic, strong) id computeFunctionDescriptor;
+@end
+
+@interface MTLMeshRenderPipelineDescriptor (Metal4Compat)
+@property (nonatomic, strong) id meshFunctionDescriptor;
+@end
+
+#if __has_include(<MetalFX/MetalFX.h>)
+#import <MetalFX/MetalFX.h>
+#else
+@interface MTLFXSpatialScalerDescriptor : NSObject
+@end
+@interface MTLFXTemporalScalerDescriptor : NSObject
+@end
+#endif
+
+@interface MTLFXSpatialScalerDescriptor (Metal4Compat)
++ (BOOL)supportsMetal4FX:(id<MTLDevice>)device;
+- (id<MTL4FXSpatialScaler>)newSpatialScalerWithDevice:(id<MTLDevice>)device compiler:(id)compiler;
+@end
+
+@interface MTLFXTemporalScalerDescriptor (Metal4Compat)
++ (BOOL)supportsMetal4FX:(id<MTLDevice>)device;
+- (id<MTL4FXTemporalScaler>)newTemporalScalerWithDevice:(id<MTLDevice>)device compiler:(id)compiler;
 @end
 
 @protocol MTL4DeviceProtocol <MTLDevice>
@@ -238,6 +289,7 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 - (id<MTL4ArgumentTable>)newArgumentTableWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4Compiler>)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4CounterHeap>)newCounterHeapWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTL4PipelineDataSetSerializer>)newPipelineDataSetSerializerWithDescriptor:(id)descriptor;
 - (id<MTL4PipelineDataSetSerializer>)newPipelineDataSetSerializerWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id)newArchiveWithURL:(id)url error:(NSError **)error;
 - (uint64_t)queryTimestampFrequency;
@@ -251,5 +303,6 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 - (id<MTL4CommandAllocator>)newCommandAllocatorWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4ArgumentTable>)newArgumentTableWithDescriptor:(id)descriptor error:(NSError **)error;
 - (id<MTL4Compiler>)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error;
+- (id<MTL4PipelineDataSetSerializer>)newPipelineDataSetSerializerWithDescriptor:(id)descriptor;
 - (uint64_t)queryTimestampFrequency;
 @end

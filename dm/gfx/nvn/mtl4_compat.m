@@ -46,17 +46,12 @@
 - (void)setLodBias:(float)lodBias {
     (void)lodBias;
 }
-@end
-
-#if __has_include(<MetalFX/MetalFX.h>)
-#import <MetalFX/MetalFX.h>
-#else
-@interface MTLFXSpatialScalerDescriptor : NSObject
-@end
-#endif
-
-@interface MTLFXSpatialScalerDescriptor (Metal4Compat)
-+ (BOOL)supportsMetal4FX:(id<MTLDevice>)device;
+- (MTLSamplerReductionMode)reductionMode {
+    return MTLSamplerReductionModeStandard;
+}
+- (void)setReductionMode:(MTLSamplerReductionMode)mode {
+    (void)mode;
+}
 @end
 
 @implementation MTLFXSpatialScalerDescriptor (Metal4Compat)
@@ -64,9 +59,28 @@
     (void)device;
     return NO;
 }
+- (id)newSpatialScalerWithDevice:(id)device compiler:(id)compiler {
+    (void)device; (void)compiler;
+    return nil;
+}
+@end
+
+@implementation MTLFXTemporalScalerDescriptor (Metal4Compat)
++ (BOOL)supportsMetal4FX:(id<MTLDevice>)device {
+    (void)device;
+    return NO;
+}
+- (id)newTemporalScalerWithDevice:(id)device compiler:(id)compiler {
+    (void)device; (void)compiler;
+    return nil;
+}
 @end
 
 @implementation NSObject (MTL4DeviceExtensions)
+- (id)newPipelineDataSetSerializerWithDescriptor:(id)descriptor {
+    (void)descriptor;
+    return [NSObject new];
+}
 - (id)newCommandBuffer {
     if ([self respondsToSelector:@selector(commandBuffer)]) {
         return [(id)self commandBuffer];
@@ -158,6 +172,23 @@
 - (void)updateTextureMappings:(id)texture heap:(id)heap operations:(const void *)operations count:(NSUInteger)count {
     (void)texture; (void)heap; (void)operations; (void)count;
 }
+- (double)GPUStartTime { return 0.0; }
+- (double)GPUEndTime { return 0.0; }
+- (NSUInteger)maxCompatiblePlacementSparsePageSize { return 0; }
+- (void)setMaxCompatiblePlacementSparsePageSize:(NSUInteger)size { (void)size; }
+- (NSUInteger)placementSparsePageSize { return 0; }
+- (void)setPlacementSparsePageSize:(NSUInteger)size { (void)size; }
+- (NSUInteger)reductionMode { return 0; }
+- (void)setReductionMode:(NSUInteger)mode { (void)mode; }
+- (id)computeFunctionDescriptor { return nil; }
+- (void)setComputeFunctionDescriptor:(id)fd { (void)fd; }
+- (id)meshFunctionDescriptor { return nil; }
+- (void)setMeshFunctionDescriptor:(id)fd { (void)fd; }
+- (BOOL)serializeAsArchiveAndFlushToURL:(NSURL *)url error:(NSError **)error {
+    (void)url; (void)error;
+    return YES;
+}
+- (void)encodeToCommandBuffer:(id)commandBuffer { (void)commandBuffer; }
 - (NSUInteger)allocatedSize { return 0; }
 - (void)reset {}
 - (void)invalidateCounterRange:(NSRange)range { (void)range; }
