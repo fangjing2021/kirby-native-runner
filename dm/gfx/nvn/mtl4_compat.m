@@ -246,26 +246,6 @@ static id<MTLCommandQueue> s_compat_queue;
 - (void)signalDrawable:(id)dr { (void)dr; }
 - (void)addResidencySet:(id)set { (void)set; }
 
-static void (*orig_addResidencySet)(id self, SEL _cmd, id set);
-static void safe_addResidencySet(id self, SEL _cmd, id set) {
-    if (!set) return;
-    if (orig_addResidencySet) {
-        orig_addResidencySet(self, _cmd, set);
-    }
-}
-
-__attribute__((constructor))
-static void hook_residency_set(void) {
-    Class cls = NSClassFromString(@"_MTLCommandQueue");
-    if (cls) {
-        Method m = class_getInstanceMethod(cls, @selector(addResidencySet:));
-        if (m) {
-            orig_addResidencySet = (void (*)(id, SEL, id))method_getImplementation(m);
-            method_setImplementation(m, (IMP)safe_addResidencySet);
-        }
-    }
-}
-
 - (void)signalEvent:(id)event value:(uint64_t)value {
     if ([event respondsToSelector:@selector(setSignaledValue:)]) {
         ((id<MTLSharedEvent>)event).signaledValue = value;
@@ -395,8 +375,21 @@ static void hook_residency_set(void) {
     [self copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toBuffer:destinationBuffer destinationOffset:destinationOffset destinationBytesPerRow:destinationBytesPerRow destinationBytesPerImage:destinationBytesPerImage];
 }
 - (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
-    (void)sourceTexture; (void)sourceSlice; (void)sourceLevel; (void)sourceOrigin; (void)sourceSize;
-    (void)destinationTexture; (void)destinationSlice; (void)destinationLevel; (void)destinationOrigin;
+    if ([sourceTexture respondsToSelector:@selector(getBytes:bytesPerRow:bytesPerImage:fromRegion:mipmapLevel:slice:)] &&
+        [destinationTexture respondsToSelector:@selector(replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:)]) {
+        NSUInteger bpp = 4;
+        NSUInteger bytesPerRow = sourceSize.width * bpp;
+        NSUInteger bytesPerImage = bytesPerRow * sourceSize.height;
+        NSUInteger depth = sourceSize.depth > 0 ? sourceSize.depth : 1;
+        void *tmp = malloc(bytesPerImage * depth);
+        if (tmp) {
+            MTLRegion sreg = MTLRegionMake3D(sourceOrigin.x, sourceOrigin.y, sourceOrigin.z, sourceSize.width, sourceSize.height, depth);
+            [sourceTexture getBytes:tmp bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage fromRegion:sreg mipmapLevel:sourceLevel slice:sourceSlice];
+            MTLRegion dreg = MTLRegionMake3D(destinationOrigin.x, destinationOrigin.y, destinationOrigin.z, sourceSize.width, sourceSize.height, depth);
+            [destinationTexture replaceRegion:dreg mipmapLevel:destinationLevel slice:destinationSlice withBytes:tmp bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage];
+            free(tmp);
+        }
+    }
 }
 - (void)fillBuffer:(id<MTLBuffer>)buffer range:(NSRange)range value:(uint8_t)value {
     if ([buffer respondsToSelector:@selector(contents)] && buffer.contents) {
@@ -458,3 +451,65 @@ static void hook_residency_set(void) {
     (void)granularity; (void)stage; (void)heap; (void)index;
 }
 @end
+
+@interface MTL4DummySafetyTarget : NSObject
++ (instancetype)sharedTarget;
+@end
+
+@implementation MTL4DummySafetyTarget
++ (instancetype)sharedTarget {
+    static MTL4DummySafetyTarget *s;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [MTL4DummySafetyTarget new]; });
+    return s;
+}
+
+static id dummy_safety_method(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return nil;
+}
+
++ (BOOL)resolveInstanceMethod:(SEL)sel {
+    class_addMethod([self class], sel, (IMP)dummy_safety_method, "@@:");
+    return YES;
+}
+@end
+
+static id (*orig_forwardingTargetForSelector)(id self, SEL _cmd, SEL sel);
+static id safe_forwardingTargetForSelector(id self, SEL _cmd, SEL sel) {
+    if (orig_forwardingTargetForSelector) {
+        id target = orig_forwardingTargetForSelector(self, _cmd, sel);
+        if (target) return target;
+    }
+    const char *name = object_getClassName(self);
+    if (name && (strncmp(name, "AGX", 3) == 0 || strncmp(name, "_MTL", 4) == 0 || strncmp(name, "IOGPU", 5) == 0)) {
+        NSLog(@"[mtl4_compat] Handled unrecognized selector -[%s %s] safely", name, sel_getName(sel));
+        return [MTL4DummySafetyTarget sharedTarget];
+    }
+    return nil;
+}
+
+static void (*orig_addResidencySet)(id self, SEL _cmd, id set);
+static void safe_addResidencySet(id self, SEL _cmd, id set) {
+    if (!set) return;
+    if (orig_addResidencySet) {
+        orig_addResidencySet(self, _cmd, set);
+    }
+}
+
+__attribute__((constructor))
+static void hook_metal_compat(void) {
+    Class cls = NSClassFromString(@"_MTLCommandQueue");
+    if (cls) {
+        Method m = class_getInstanceMethod(cls, @selector(addResidencySet:));
+        if (m) {
+            orig_addResidencySet = (void (*)(id, SEL, id))method_getImplementation(m);
+            method_setImplementation(m, (IMP)safe_addResidencySet);
+        }
+    }
+    Method fm = class_getInstanceMethod([NSObject class], @selector(forwardingTargetForSelector:));
+    if (fm) {
+        orig_forwardingTargetForSelector = (id (*)(id, SEL, SEL))method_getImplementation(fm);
+        method_setImplementation(fm, (IMP)safe_forwardingTargetForSelector);
+    }
+}

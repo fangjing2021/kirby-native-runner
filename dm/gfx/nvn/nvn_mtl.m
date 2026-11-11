@@ -1546,7 +1546,7 @@ static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThrea
 static inline void enc_c_dispatch_indirect(id e, uint64_t ind, MTLSize t) { [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:ind threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) {
     if (cb == g_cb) { g_cm_enc++; cm_enc_mark(3); }
-    id e = [cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder];
+    id e = [cb respondsToSelector:@selector(blitCommandEncoder)] ? [cb blitCommandEncoder] : [cb computeCommandEncoder];
     if (cb == g_cb) cm_enc_mark(1);
     return e; }
 static inline void enc_b_end(id e) { m4_end(e); }
@@ -15048,7 +15048,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     }
     [g_present_alloc4[alloc_i] reset];
     [g_q4 waitForDrawable:dr];
-    id<MTL4CommandBuffer> cb = g_present_cb[alloc_i];
+    id<MTL4CommandBuffer> cb = [g_dev newCommandBuffer];
+    g_present_cb[alloc_i] = cb;
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
     int kind = present_encode_m4(cb, src, dr.texture, crop, g_present_uv[alloc_i], &g_fx_present);
     if (!kind) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
@@ -15423,9 +15424,10 @@ static uint64_t snap_take(const tex_t *t) {
         MLOG("present snapshots: ring slot %d %lux%lu format %lu", k, (unsigned long)dst.width, (unsigned long)dst.height, (unsigned long)dst.pixelFormat);
     }
     [g_snap_alloc[k] reset];
-    id<MTL4CommandBuffer> cb = g_snap_cb[k];
+    id<MTL4CommandBuffer> cb = [g_dev newCommandBuffer];
+    g_snap_cb[k] = cb;
     [cb beginCommandBufferWithAllocator:g_snap_alloc[k]];
-    id<MTL4ComputeCommandEncoder> ce = [cb computeCommandEncoder];
+    id ce = [cb respondsToSelector:@selector(blitCommandEncoder)] ? [cb blitCommandEncoder] : [cb computeCommandEncoder];
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];   // after the frame's work and the slot's last blit to the screen
     [ce copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(src.width, src.height, 1) toTexture:dst destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // the game's next writes to its texture come after the copy
