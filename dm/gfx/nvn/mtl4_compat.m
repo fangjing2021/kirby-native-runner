@@ -244,6 +244,11 @@ static id<MTLCommandQueue> s_compat_queue;
 - (void)waitForDrawable:(id)dr { (void)dr; }
 - (void)signalDrawable:(id)dr { (void)dr; }
 - (void)addResidencySet:(id)set { (void)set; }
+- (void)signalEvent:(id)event value:(uint64_t)value {
+    if ([event respondsToSelector:@selector(setSignaledValue:)]) {
+        ((id<MTLSharedEvent>)event).signaledValue = value;
+    }
+}
 - (void)waitForEvent:(id)event value:(uint64_t)value { (void)event; (void)value; }
 - (void)updateTextureMappings:(id)texture heap:(id)heap operations:(const void *)operations count:(NSUInteger)count {
     (void)texture; (void)heap; (void)operations; (void)count;
