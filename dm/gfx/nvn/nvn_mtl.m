@@ -2938,7 +2938,14 @@ static void up_flush(void) {
     if (g_up_ce) {
         m4_end(g_up_ce); g_up_ce = nil;
     }
-    id<MTL4ComputeCommandEncoder> b = g_nup_blits ? g_up_ce = [g_up_cb computeCommandEncoder] : nil;
+    id b = nil;
+    if (g_nup_blits) {
+        if ([g_up_cb respondsToSelector:@selector(blitCommandEncoder)]) {
+            b = [g_up_cb blitCommandEncoder];
+        } else {
+            b = g_up_ce = [g_up_cb computeCommandEncoder];
+        }
+    }
     if (b) [b barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()];
     for (int i = 0; b && i < g_nup_blits; i++) {
         up_blit *x = &g_up_blits[i];
