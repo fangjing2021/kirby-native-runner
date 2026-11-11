@@ -15026,7 +15026,11 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (atomic_load(&g_gpu_lost)) return 0;   // the display command buffer would be ignored too: take no drawable from the screen the front end is about to close
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
     if (!layer) return 0;
-    if (g_present_layer_resident != layer) { [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }
+    if (g_present_layer_resident != layer) {
+        id rset = [layer respondsToSelector:@selector(residencySet)] ? layer.residencySet : nil;
+        if (rset) [g_q4 addResidencySet:rset];
+        g_present_layer_resident = layer;
+    }
 #if TARGET_OS_OSX
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // Windowed mode follows the display's vsync to prevent tearing
 #endif

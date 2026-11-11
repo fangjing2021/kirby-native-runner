@@ -1,5 +1,6 @@
 #import "mtl4_compat.h"
 #include "nvn_mtl.h"
+#import <objc/runtime.h>
 
 @implementation MTL4CommandQueueDescriptor
 @end
@@ -244,6 +245,27 @@ static id<MTLCommandQueue> s_compat_queue;
 - (void)waitForDrawable:(id)dr { (void)dr; }
 - (void)signalDrawable:(id)dr { (void)dr; }
 - (void)addResidencySet:(id)set { (void)set; }
+
+static void (*orig_addResidencySet)(id self, SEL _cmd, id set);
+static void safe_addResidencySet(id self, SEL _cmd, id set) {
+    if (!set) return;
+    if (orig_addResidencySet) {
+        orig_addResidencySet(self, _cmd, set);
+    }
+}
+
+__attribute__((constructor))
+static void hook_residency_set(void) {
+    Class cls = NSClassFromString(@"_MTLCommandQueue");
+    if (cls) {
+        Method m = class_getInstanceMethod(cls, @selector(addResidencySet:));
+        if (m) {
+            orig_addResidencySet = (void (*)(id, SEL, id))method_getImplementation(m);
+            method_setImplementation(m, (IMP)safe_addResidencySet);
+        }
+    }
+}
+
 - (void)signalEvent:(id)event value:(uint64_t)value {
     if ([event respondsToSelector:@selector(setSignaledValue:)]) {
         ((id<MTLSharedEvent>)event).signaledValue = value;
