@@ -1,4 +1,5 @@
 #import "mtl4_compat.h"
+#include "nvn_mtl.h"
 
 @implementation MTL4CommandQueueDescriptor
 @end
@@ -376,7 +377,52 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
-    (void)indirectBuffer; (void)threadsPerThreadgroup;
+    void *ind_buf = NULL;
+    uint64_t ind_off = 0;
+    if (mtl_addr(indirectBuffer, 12, &ind_buf, &ind_off)) {
+        if ([self respondsToSelector:@selector(dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:)]) {
+            [(id<MTLComputeCommandEncoder>)self dispatchThreadgroupsWithIndirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off threadsPerThreadgroup:threadsPerThreadgroup];
+        }
+    }
+}
+- (void)drawPrimitives:(MTLPrimitiveType)primitiveType indirectBuffer:(uint64_t)indirectBuffer {
+    void *ind_buf = NULL;
+    uint64_t ind_off = 0;
+    if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off)) {
+        if ([self respondsToSelector:@selector(drawPrimitives:indirectBuffer:indirectBufferOffset:)]) {
+            [(id<MTLRenderCommandEncoder>)self drawPrimitives:primitiveType indirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off];
+        }
+    }
+}
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexCount:(NSUInteger)indexCount indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength instanceCount:(NSUInteger)instanceCount baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance {
+    void *buf = NULL;
+    uint64_t off = 0;
+    if (mtl_addr(indexBuffer, indexBufferLength, &buf, &off)) {
+        if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:)]) {
+            [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexCount:indexCount indexType:indexType indexBuffer:(__bridge id<MTLBuffer>)buf indexBufferOffset:off instanceCount:instanceCount baseVertex:baseVertex baseInstance:baseInstance];
+        }
+    }
+}
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength indirectBuffer:(uint64_t)indirectBuffer {
+    void *ibuf = NULL, *ind_buf = NULL;
+    uint64_t ioff = 0, ind_off = 0;
+    if (mtl_addr(indexBuffer, indexBufferLength, &ibuf, &ioff) && mtl_addr(indirectBuffer, 20, &ind_buf, &ind_off)) {
+        if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:)]) {
+            [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexType:indexType indexBuffer:(__bridge id<MTLBuffer>)ibuf indexBufferOffset:ioff indirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off];
+        }
+    }
+}
+- (void)drawMeshThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerObjectThreadgroup:(MTLSize)threadsPerObject threadsPerMeshThreadgroup:(MTLSize)threadsPerMesh {
+    void *ind_buf = NULL;
+    uint64_t ind_off = 0;
+    if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off)) {
+        if ([self respondsToSelector:@selector(drawMeshThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:)]) {
+            [(id<MTLRenderCommandEncoder>)self drawMeshThreadgroupsWithIndirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off threadsPerObjectThreadgroup:threadsPerObject threadsPerMeshThreadgroup:threadsPerMesh];
+        }
+    }
+}
+- (void)setVertexAmplificationCount:(NSUInteger)count viewMappings:(const void *)viewMappings {
+    (void)count; (void)viewMappings;
 }
 - (void)writeTimestampWithGranularity:(NSUInteger)granularity intoHeap:(id)heap atIndex:(NSUInteger)index {
     (void)granularity; (void)heap; (void)index;
