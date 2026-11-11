@@ -12,9 +12,30 @@
 @implementation MTL4LibraryDescriptor
 @end
 
-@implementation MTL4CommitOptions
+@interface MTL4CommitFeedbackImpl : NSObject <MTL4CommitFeedback>
+@property (nonatomic, strong) NSError *error;
+@property (nonatomic) double GPUStartTime;
+@property (nonatomic) double GPUEndTime;
+@end
+
+@implementation MTL4CommitFeedbackImpl
+@end
+
+@implementation MTL4CommitOptions {
+@public
+    NSMutableArray *_handlers;
+}
+- (instancetype)init {
+    if ((self = [super init])) {
+        _handlers = [NSMutableArray array];
+    }
+    return self;
+}
 - (void)addFeedbackHandler:(void (^)(id<MTL4CommitFeedback> feedback))handler {
-    (void)handler;
+    if (handler) {
+        if (!_handlers) _handlers = [NSMutableArray array];
+        [_handlers addObject:[handler copy]];
+    }
 }
 @end
 
@@ -87,9 +108,19 @@
     (void)descriptor;
     return [NSObject new];
 }
+static id<MTLCommandQueue> s_compat_queue;
+
 - (id)newCommandBuffer {
     if ([self respondsToSelector:@selector(commandBuffer)]) {
         return [(id)self commandBuffer];
+    }
+    if (s_compat_queue) {
+        return [s_compat_queue commandBuffer];
+    }
+    if ([self respondsToSelector:@selector(newCommandQueue)]) {
+        id<MTLCommandQueue> q = [(id)self newCommandQueue];
+        s_compat_queue = q;
+        return [q commandBuffer];
     }
     return [NSObject new];
 }
@@ -99,9 +130,16 @@
 }
 
 - (id)newMTL4CommandQueueWithDescriptor:(id)descriptor error:(NSError **)error {
+    if ([self respondsToSelector:@selector(newCommandQueue)]) {
+        id<MTLCommandQueue> q = [(id)self newCommandQueue];
+        s_compat_queue = q;
+        return q;
+    }
     if ([self conformsToProtocol:@protocol(MTLDevice)]) {
         id<MTLDevice> dev = (id<MTLDevice>)self;
-        return [dev newCommandQueue];
+        id<MTLCommandQueue> q = [dev newCommandQueue];
+        s_compat_queue = q;
+        return q;
     }
     if (error) *error = [NSError errorWithDomain:@"MTL4" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Device does not support command queue"}];
     return nil;
@@ -159,12 +197,39 @@
 - (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index { (void)texture; (void)index; }
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index { (void)sampler; (void)index; }
 - (void)commit:(id const *)buffers count:(NSUInteger)count options:(id)options {
-    (void)options;
+    NSArray *handlers = nil;
+    if ([options isKindOfClass:[MTL4CommitOptions class]]) {
+        MTL4CommitOptions *opt = (MTL4CommitOptions *)options;
+        if (opt->_handlers.count > 0) {
+            handlers = [opt->_handlers copy];
+        }
+    }
+    BOOL dispatched = NO;
     for (NSUInteger i = 0; i < count; i++) {
         id b = buffers[i];
+        if (handlers.count > 0 && [b respondsToSelector:@selector(addCompletedHandler:)]) {
+            dispatched = YES;
+            [b addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+                MTL4CommitFeedbackImpl *f = [MTL4CommitFeedbackImpl new];
+                f.error = cb.error;
+                f.GPUStartTime = cb.GPUStartTime;
+                f.GPUEndTime = cb.GPUEndTime;
+                for (void (^h)(id<MTL4CommitFeedback>) in handlers) {
+                    h(f);
+                }
+            }];
+        }
         if ([b respondsToSelector:@selector(commit)]) {
             [b commit];
         }
+    }
+    if (handlers.count > 0 && !dispatched) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MTL4CommitFeedbackImpl *f = [MTL4CommitFeedbackImpl new];
+            for (void (^h)(id<MTL4CommitFeedback>) in handlers) {
+                h(f);
+            }
+        });
     }
 }
 - (void)commit:(id const *)buffers count:(NSUInteger)count {

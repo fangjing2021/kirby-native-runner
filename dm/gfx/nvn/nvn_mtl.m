@@ -14907,6 +14907,12 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     uv[4] = (cx + 0.5f) / tw; uv[5] = (cy + 0.5f) / th; uv[6] = (cx + cw - 0.5f) / tw; uv[7] = (cy + ch - 0.5f) / th;
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
     [g_present_args setAddress:uvb.gpuAddress atIndex:0];
+    if ([en respondsToSelector:@selector(setFragmentTexture:atIndex:)]) {
+        id<MTLRenderCommandEncoder> ren = (id<MTLRenderCommandEncoder>)en;
+        [ren setFragmentTexture:tex atIndex:0];
+        [ren setFragmentSamplerState:g_blit_samp atIndex:0];
+        [ren setFragmentBuffer:uvb offset:0 atIndex:0];
+    }
     [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     m4_end(en);
