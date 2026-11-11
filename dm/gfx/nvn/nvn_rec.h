@@ -61,7 +61,7 @@ static uint64_t ubc_push(void *d, const void *s, size_t n) {
 
 enum {
     RO_CB_NEW, RO_CB_BEGIN, RO_CB_END, RO_COMMIT, RO_COMMIT_REAL, RO_SIGNAL, RO_CB_BLOCK, RO_Q_BLOCK,
-    RO_RE_BEGIN, RO_CE_BEGIN, RO_END,
+    RO_RE_BEGIN, RO_CE_BEGIN, RO_BE_BEGIN, RO_END,
     RO_BAR_QUEUE, RO_BAR_AFTER_STAGES, RO_BAR_ENCODER,
     RO_R_TABLE, RO_R_PSO, RO_R_DSS, RO_R_VIEWPORT, RO_R_SCISSOR, RO_R_CULL, RO_R_WINDING, RO_R_FILL, RO_R_BIAS, RO_R_CLIP, RO_R_SREF, RO_R_BLEND, RO_R_VIS, RO_R_AMP,
     RO_R_DRAW, RO_R_DRAW_INST, RO_R_DRAW_IND, RO_R_DRAW_IDX, RO_R_DRAW_IDX_IND, RO_R_MESH, RO_R_MESH_IND, RO_R_STORE_C, RO_R_STORE_D, RO_R_STORE_S,
@@ -125,6 +125,7 @@ static void rec_exec(const rec_t *r) {
     case RO_Q_BLOCK: ((void (^)(void))rec_id(a[0]))(); break;
     case RO_RE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb renderCommandEncoderWithDescriptor:rec_id(a[0])]; break;
     case RO_CE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb computeCommandEncoder]; break;
+    case RO_BE_BEGIN: g_rx_enc = [(id<MTLCommandBuffer>)g_rx_cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)g_rx_cb blitCommandEncoder] : [(id<MTLCommandBuffer>)g_rx_cb computeCommandEncoder]; break;
     case RO_END: [(id<MTL4CommandEncoder>)e endEncoding]; g_rx_enc = nil; break;
     case RO_BAR_QUEUE: [(id<MTL4CommandEncoder>)e barrierAfterQueueStages:a[0] beforeStages:a[1] visibilityOptions:a[2]]; break;
     case RO_BAR_AFTER_STAGES: [(id<MTL4CommandEncoder>)e barrierAfterStages:a[0] beforeQueueStages:a[1] visibilityOptions:a[2]]; break;
@@ -258,7 +259,7 @@ static inline id rec_table_real(id t) { return [t isKindOfClass:[DmRecTable clas
 
 @interface DmRecEnc : NSObject @end
 @implementation DmRecEnc
-- (BOOL)conformsToProtocol:(Protocol *)p { return p == @protocol(MTL4CommandEncoder) || p == @protocol(MTL4RenderCommandEncoder) || p == @protocol(MTL4ComputeCommandEncoder) || [super conformsToProtocol:p]; }
+- (BOOL)conformsToProtocol:(Protocol *)p { return p == @protocol(MTLBlitCommandEncoder) || p == @protocol(MTL4CommandEncoder) || p == @protocol(MTL4RenderCommandEncoder) || p == @protocol(MTL4ComputeCommandEncoder) || [super conformsToProtocol:p]; }
 - (id)forwardingTargetForSelector:(SEL)s { rec_missing(self, s); }
 - (void)endEncoding { rec_put(RO_END, 0); }
 - (void)barrierAfterQueueStages:(MTLStages)a beforeStages:(MTLStages)b visibilityOptions:(MTL4VisibilityOptions)v { rec_t *r = rec_put(RO_BAR_QUEUE, 0); r->a[0] = a; r->a[1] = b; r->a[2] = v; }
@@ -330,6 +331,7 @@ static inline id rec_table_real(id t) { return [t isKindOfClass:[DmRecTable clas
 - (void)endCommandBuffer { rec_put(RO_CB_END, 0); }
 - (id)renderCommandEncoderWithDescriptor:(MTL4RenderPassDescriptor *)d { rec_put(RO_RE_BEGIN, 1)->a[0] = rec_obj([d copy]); return [DmRecEnc new]; }   // copied: the replay may reuse or change the descriptor afterwards
 - (id)computeCommandEncoder { rec_put(RO_CE_BEGIN, 0); return [DmRecEnc new]; }
+- (id)blitCommandEncoder { rec_put(RO_BE_BEGIN, 0); return [DmRecEnc new]; }
 @end
 
 // The replay's entry points

@@ -353,6 +353,9 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset sourceBytesPerRow:(NSUInteger)sourceBytesPerRow sourceBytesPerImage:(NSUInteger)sourceBytesPerImage sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
+    if ([destinationTexture respondsToSelector:@selector(storageMode)] && destinationTexture.storageMode != MTLStorageModeShared) {
+        return;
+    }
     if ([sourceBuffer respondsToSelector:@selector(contents)] && sourceBuffer.contents) {
         const uint8_t *src = (const uint8_t *)sourceBuffer.contents + sourceOffset;
         MTLRegion region = MTLRegionMake3D(destinationOrigin.x, destinationOrigin.y, destinationOrigin.z, sourceSize.width, sourceSize.height, sourceSize.depth);
@@ -364,6 +367,9 @@ static id<MTLCommandQueue> s_compat_queue;
     [self copyFromBuffer:sourceBuffer sourceOffset:sourceOffset sourceBytesPerRow:sourceBytesPerRow sourceBytesPerImage:sourceBytesPerImage sourceSize:sourceSize toTexture:destinationTexture destinationSlice:destinationSlice destinationLevel:destinationLevel destinationOrigin:destinationOrigin];
 }
 - (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset destinationBytesPerRow:(NSUInteger)destinationBytesPerRow destinationBytesPerImage:(NSUInteger)destinationBytesPerImage {
+    if ([sourceTexture respondsToSelector:@selector(storageMode)] && sourceTexture.storageMode != MTLStorageModeShared) {
+        return;
+    }
     if ([destinationBuffer respondsToSelector:@selector(contents)] && destinationBuffer.contents) {
         uint8_t *dst = (uint8_t *)destinationBuffer.contents + destinationOffset;
         MTLRegion region = MTLRegionMake3D(sourceOrigin.x, sourceOrigin.y, sourceOrigin.z, sourceSize.width, sourceSize.height, sourceSize.depth);
@@ -375,6 +381,10 @@ static id<MTLCommandQueue> s_compat_queue;
     [self copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toBuffer:destinationBuffer destinationOffset:destinationOffset destinationBytesPerRow:destinationBytesPerRow destinationBytesPerImage:destinationBytesPerImage];
 }
 - (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
+    if (([sourceTexture respondsToSelector:@selector(storageMode)] && sourceTexture.storageMode != MTLStorageModeShared) ||
+        ([destinationTexture respondsToSelector:@selector(storageMode)] && destinationTexture.storageMode != MTLStorageModeShared)) {
+        return;
+    }
     if ([sourceTexture respondsToSelector:@selector(getBytes:bytesPerRow:bytesPerImage:fromRegion:mipmapLevel:slice:)] &&
         [destinationTexture respondsToSelector:@selector(replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:)]) {
         NSUInteger bpp = 4;
