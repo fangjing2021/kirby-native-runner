@@ -25,7 +25,7 @@ jobs:
           path: |
             build/ios/dmsh_b
             build/shcache
-          key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz') }}
+          key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz', 'dm/games/01004D300C5AE000/shader_facts.tsv', 'dm/games/01004D300C5AE000/shader_facts_manual.tsv') }}
 
       - name: Run Build Script
         run: |
@@ -38,7 +38,7 @@ jobs:
           path: |
             build/ios/dmsh_b
             build/shcache
-          key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz') }}
+          key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz', 'dm/games/01004D300C5AE000/shader_facts.tsv', 'dm/games/01004D300C5AE000/shader_facts_manual.tsv') }}
 
       - name: Upload Kirby IPA Artifact
         uses: actions/upload-artifact@v4

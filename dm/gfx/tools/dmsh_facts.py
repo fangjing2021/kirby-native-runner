@@ -9,10 +9,16 @@ import json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '../../games')); import game as _game   # the tables are in the current game profile folder (DM_GAME)
 TABLE = str(_game.load().table('shader_facts.tsv'))
+MANUAL = str(_game.load().table('shader_facts_manual.tsv'))
 def load():
     """key → fact dict; returns an empty dict if the table does not exist"""
-    if not os.path.exists(TABLE): return {}
-    return {k: json.loads(v) for k, v in (l.rstrip('\n').split('\t', 1) for l in open(TABLE) if l.strip() and not l.startswith('#'))}
+    t = {}
+    if os.path.exists(TABLE):
+        t.update({k: json.loads(v) for k, v in (l.rstrip('\n').split('\t', 1) for l in open(TABLE) if l.strip() and not l.startswith('#'))})
+    if os.path.exists(MANUAL):
+        for k, v in (l.rstrip('\n').split('\t', 1) for l in open(MANUAL) if l.strip() and not l.startswith('#')):
+            t.setdefault(k, {}).update(json.loads(v))
+    return t
 
 def row(key, facts): return key + '\t' + json.dumps(facts, sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n'
 
