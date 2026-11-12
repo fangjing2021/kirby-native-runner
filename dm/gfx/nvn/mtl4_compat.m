@@ -1,6 +1,7 @@
 #import "mtl4_compat.h"
 #include "nvn_mtl.h"
 #import <objc/runtime.h>
+#import <os/lock.h>
 
 @implementation MTL4CommandQueueDescriptor
 @end
@@ -119,8 +120,9 @@ static inline DmCompatArgumentTable *unwrap_compat_table(id obj) {
     return nil;
 }
 
-static __unsafe_unretained id s_active_render_enc = nil;
-static __unsafe_unretained id s_active_compute_enc = nil;
+static __unsafe_unretained DmCompatArgumentTable *s_all_tables[64];
+static int s_all_tables_count = 0;
+static os_unfair_lock s_tables_lock = OS_UNFAIR_LOCK_INIT;
 
 static __unsafe_unretained DmCompatArgumentTable *s_active_vt = nil;
 static __unsafe_unretained DmCompatArgumentTable *s_active_ft = nil;
@@ -136,41 +138,55 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
     BOOL _is_compute;
 }
 
+- (instancetype)init {
+    if ((self = [super init])) {
+        os_unfair_lock_lock(&s_tables_lock);
+        if (s_all_tables_count < 64) {
+            s_all_tables[s_all_tables_count++] = self;
+        }
+        os_unfair_lock_unlock(&s_tables_lock);
+    }
+    return self;
+}
+
+- (void)dealloc {
+    os_unfair_lock_lock(&s_tables_lock);
+    for (int i = 0; i < s_all_tables_count; i++) {
+        if (s_all_tables[i] == self) {
+            s_all_tables[i] = s_all_tables[--s_all_tables_count];
+            break;
+        }
+    }
+    os_unfair_lock_unlock(&s_tables_lock);
+}
+
 + (void)notifyEncoderEnded:(id)encoder {
     if (!encoder) return;
-    if (s_active_render_enc == encoder) s_active_render_enc = nil;
-    if (s_active_compute_enc == encoder) s_active_compute_enc = nil;
-    if (s_active_vt && (s_active_vt->_encoder == encoder || !s_active_render_enc)) {
-        s_active_vt->_encoder = nil;
-        s_active_vt = nil;
+    os_unfair_lock_lock(&s_tables_lock);
+    for (int i = 0; i < s_all_tables_count; i++) {
+        DmCompatArgumentTable *t = s_all_tables[i];
+        if (t && t->_encoder == encoder) {
+            t->_encoder = nil;
+        }
     }
-    if (s_active_ft && (s_active_ft->_encoder == encoder || !s_active_render_enc)) {
-        s_active_ft->_encoder = nil;
-        s_active_ft = nil;
-    }
-    if (s_active_ct && (s_active_ct->_encoder == encoder || !s_active_compute_enc)) {
-        s_active_ct->_encoder = nil;
-        s_active_ct = nil;
-    }
+    if (s_active_vt && s_active_vt->_encoder == nil) s_active_vt = nil;
+    if (s_active_ft && s_active_ft->_encoder == nil) s_active_ft = nil;
+    if (s_active_ct && s_active_ct->_encoder == nil) s_active_ct = nil;
+    os_unfair_lock_unlock(&s_tables_lock);
 }
 
 - (void)applyToIndex:(NSUInteger)index {
     if (index >= 32 || !(_valid_mask & (1u << index))) return;
     id enc = _encoder;
     if (!enc) return;
+    id<MTLBuffer> buf = _buffers[index];
+    NSUInteger off = _offsets[index];
+    if (!buf) return;
     if (_is_compute) {
-        if (enc != s_active_compute_enc) { _encoder = nil; return; }
-        id<MTLBuffer> buf = _buffers[index];
-        NSUInteger off = _offsets[index];
-        if (!buf) return;
         if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
             [(id<MTLComputeCommandEncoder>)enc setBuffer:buf offset:off atIndex:index];
         }
     } else {
-        if (enc != s_active_render_enc) { _encoder = nil; return; }
-        id<MTLBuffer> buf = _buffers[index];
-        NSUInteger off = _offsets[index];
-        if (!buf) return;
         if ((_render_stages & MTLRenderStageVertex) && [enc respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
             [(id<MTLRenderCommandEncoder>)enc setVertexBuffer:buf offset:off atIndex:index];
         }
@@ -231,7 +247,6 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index { (void)sampler; (void)index; }
 
 - (void)bindToRenderEncoder:(id)encoder stages:(MTLRenderStages)stages {
-    s_active_render_enc = encoder;
     _encoder = encoder;
     _render_stages = stages;
     _is_compute = NO;
@@ -241,7 +256,6 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 }
 
 - (void)bindToComputeEncoder:(id)encoder {
-    s_active_compute_enc = encoder;
     _encoder = encoder;
     _is_compute = YES;
     _render_stages = 0;
