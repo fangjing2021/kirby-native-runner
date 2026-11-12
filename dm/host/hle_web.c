@@ -204,7 +204,14 @@ HLE_FORCE("_ZN2nn3web19ShowOfflineHtmlPageEPNS0_26OfflineHtmlPageReturnValueERKN
     hle_bind_system_event(g_ev_web, 0); hle_clear_system_event(g_ev_web);
     web_start(arg, 1);
     pthread_mutex_lock(&g_web_mu); int real = g_web_real; pthread_mutex_unlock(&g_web_mu);
-    if (!real) { web_return(NULL); LOG("web::ShowOfflineHtmlPage: no page shown (cut)"); return RES_FAIL; }
+    if (!real) {
+        LOG("web::ShowOfflineHtmlPage: stand-in answered OK (auto-accepted)");
+        pthread_mutex_lock(&g_web_mu);
+        web_end_locked(0, NULL);
+        pthread_mutex_unlock(&g_web_mu);
+        web_return(rv);
+        return RES_OK;
+    }
     web_wait_end(); web_return(rv);
     return RES_OK;
 }
