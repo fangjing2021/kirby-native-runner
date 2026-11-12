@@ -105,6 +105,136 @@
 }
 @end
 
+@interface DmRecTableIvarHolder : NSObject { @public id real; } @end
+@implementation DmRecTableIvarHolder @end
+
+static inline DmCompatArgumentTable *unwrap_compat_table(id obj) {
+    if (!obj) return nil;
+    if ([obj isKindOfClass:[DmCompatArgumentTable class]]) return (DmCompatArgumentTable *)obj;
+    const char *cname = object_getClassName(obj);
+    if (cname && strcmp(cname, "DmRecTable") == 0) {
+        id real = ((DmRecTableIvarHolder *)obj)->real;
+        if ([real isKindOfClass:[DmCompatArgumentTable class]]) return (DmCompatArgumentTable *)real;
+    }
+    return nil;
+}
+
+static __unsafe_unretained DmCompatArgumentTable *s_active_vt = nil;
+static __unsafe_unretained DmCompatArgumentTable *s_active_ft = nil;
+static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
+
+@implementation DmCompatArgumentTable {
+    uint64_t _addresses[32];
+    id<MTLBuffer> _buffers[32];
+    NSUInteger _offsets[32];
+    uint32_t _valid_mask;
+    __unsafe_unretained id _encoder;
+    MTLRenderStages _render_stages;
+    BOOL _is_compute;
+}
+
++ (void)notifyEncoderEnded:(id)encoder {
+    if (s_active_vt && s_active_vt->_encoder == encoder) {
+        s_active_vt->_encoder = nil;
+        s_active_vt = nil;
+    }
+    if (s_active_ft && s_active_ft->_encoder == encoder) {
+        s_active_ft->_encoder = nil;
+        s_active_ft = nil;
+    }
+    if (s_active_ct && s_active_ct->_encoder == encoder) {
+        s_active_ct->_encoder = nil;
+        s_active_ct = nil;
+    }
+}
+
+- (void)applyToIndex:(NSUInteger)index {
+    if (index >= 32 || !(_valid_mask & (1u << index)) || !_encoder) return;
+    id<MTLBuffer> buf = _buffers[index];
+    NSUInteger off = _offsets[index];
+    if (!buf) return;
+    if (_is_compute) {
+        if ([_encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+            [(id<MTLComputeCommandEncoder>)_encoder setBuffer:buf offset:off atIndex:index];
+        }
+    } else {
+        if ((_render_stages & MTLRenderStageVertex) && [_encoder respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)_encoder setVertexBuffer:buf offset:off atIndex:index];
+        }
+        if ((_render_stages & MTLRenderStageFragment) && [_encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)_encoder setFragmentBuffer:buf offset:off atIndex:index];
+        }
+    }
+}
+
+- (void)applyAllToEncoder:(id)encoder {
+    if (!encoder) return;
+    for (NSUInteger i = 0; i < 32; i++) {
+        if (_valid_mask & (1u << i)) {
+            id<MTLBuffer> buf = _buffers[i];
+            NSUInteger off = _offsets[i];
+            if (buf) {
+                if (_is_compute) {
+                    if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+                        [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
+                    }
+                } else {
+                    if ((_render_stages & MTLRenderStageVertex) && [encoder respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setVertexBuffer:buf offset:off atIndex:i];
+                    }
+                    if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setFragmentBuffer:buf offset:off atIndex:i];
+                    }
+                }
+            }
+        }
+    }
+}
+
+- (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index {
+    if (index >= 32) return;
+    _addresses[index] = address;
+    if (address) {
+        void *b = NULL;
+        uint64_t off = 0;
+        if (mtl_addr(address, 1, &b, &off) && b) {
+            _buffers[index] = (__bridge id<MTLBuffer>)b;
+            _offsets[index] = (NSUInteger)off;
+            _valid_mask |= (1u << index);
+        } else {
+            _buffers[index] = nil;
+            _offsets[index] = 0;
+            _valid_mask &= ~(1u << index);
+        }
+    } else {
+        _buffers[index] = nil;
+        _offsets[index] = 0;
+        _valid_mask &= ~(1u << index);
+    }
+    [self applyToIndex:index];
+}
+
+- (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index { (void)texture; (void)index; }
+- (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index { (void)sampler; (void)index; }
+
+- (void)bindToRenderEncoder:(id)encoder stages:(MTLRenderStages)stages {
+    _encoder = encoder;
+    _render_stages = stages;
+    _is_compute = NO;
+    if (stages & MTLRenderStageVertex) s_active_vt = self;
+    if (stages & MTLRenderStageFragment) s_active_ft = self;
+    [self applyAllToEncoder:encoder];
+}
+
+- (void)bindToComputeEncoder:(id)encoder {
+    _encoder = encoder;
+    _is_compute = YES;
+    _render_stages = 0;
+    s_active_ct = self;
+    [self applyAllToEncoder:encoder];
+}
+@end
+
 @implementation NSObject (MTL4DeviceExtensions)
 - (id)newPipelineDataSetSerializerWithDescriptor:(id)descriptor {
     (void)descriptor;
@@ -152,7 +282,8 @@ static id<MTLCommandQueue> s_compat_queue;
 }
 
 - (id)newArgumentTableWithDescriptor:(id)descriptor error:(NSError **)error {
-    return [NSObject new];
+    (void)descriptor; (void)error;
+    return [DmCompatArgumentTable new];
 }
 
 - (id)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error {
@@ -193,8 +324,14 @@ static id<MTLCommandQueue> s_compat_queue;
 - (void)barrierAfterQueueStages:(NSUInteger)after beforeStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
 }
-- (void)setArgumentTable:(id)table { (void)table; }
-- (void)setArgumentTable:(id)table atStages:(MTLRenderStages)stages { (void)table; (void)stages; }
+- (void)setArgumentTable:(id)table {
+    DmCompatArgumentTable *t = unwrap_compat_table(table);
+    if (t) [t bindToComputeEncoder:self];
+}
+- (void)setArgumentTable:(id)table atStages:(MTLRenderStages)stages {
+    DmCompatArgumentTable *t = unwrap_compat_table(table);
+    if (t) [t bindToRenderEncoder:self stages:stages];
+}
 - (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index { (void)address; (void)index; }
 - (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index { (void)texture; (void)index; }
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index { (void)sampler; (void)index; }
@@ -407,6 +544,7 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    if (s_active_ct) [s_active_ct applyAllToEncoder:self];
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
     if (mtl_addr(indirectBuffer, 12, &ind_buf, &ind_off)) {
@@ -416,6 +554,8 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)drawPrimitives:(MTLPrimitiveType)primitiveType indirectBuffer:(uint64_t)indirectBuffer {
+    if (s_active_vt) [s_active_vt applyAllToEncoder:self];
+    if (s_active_ft) [s_active_ft applyAllToEncoder:self];
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
     if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off)) {
@@ -425,6 +565,8 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexCount:(NSUInteger)indexCount indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength instanceCount:(NSUInteger)instanceCount baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance {
+    if (s_active_vt) [s_active_vt applyAllToEncoder:self];
+    if (s_active_ft) [s_active_ft applyAllToEncoder:self];
     void *buf = NULL;
     uint64_t off = 0;
     if (mtl_addr(indexBuffer, indexBufferLength, &buf, &off)) {
@@ -434,6 +576,8 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength indirectBuffer:(uint64_t)indirectBuffer {
+    if (s_active_vt) [s_active_vt applyAllToEncoder:self];
+    if (s_active_ft) [s_active_ft applyAllToEncoder:self];
     void *ibuf = NULL, *ind_buf = NULL;
     uint64_t ioff = 0, ind_off = 0;
     if (mtl_addr(indexBuffer, indexBufferLength, &ibuf, &ioff) && mtl_addr(indirectBuffer, 20, &ind_buf, &ind_off)) {
@@ -507,6 +651,14 @@ static void safe_addResidencySet(id self, SEL _cmd, id set) {
     }
 }
 
+static void (*orig_endEncoding)(id self, SEL _cmd);
+static void safe_endEncoding(id self, SEL _cmd) {
+    [DmCompatArgumentTable notifyEncoderEnded:self];
+    if (orig_endEncoding) {
+        orig_endEncoding(self, _cmd);
+    }
+}
+
 __attribute__((constructor))
 static void hook_metal_compat(void) {
     Class cls = NSClassFromString(@"_MTLCommandQueue");
@@ -515,6 +667,14 @@ static void hook_metal_compat(void) {
         if (m) {
             orig_addResidencySet = (void (*)(id, SEL, id))method_getImplementation(m);
             method_setImplementation(m, (IMP)safe_addResidencySet);
+        }
+    }
+    Class encCls = NSClassFromString(@"_MTLCommandEncoder");
+    if (encCls) {
+        Method em = class_getInstanceMethod(encCls, @selector(endEncoding));
+        if (em) {
+            orig_endEncoding = (void (*)(id, SEL))method_getImplementation(em);
+            method_setImplementation(em, (IMP)safe_endEncoding);
         }
     }
     Method fm = class_getInstanceMethod([NSObject class], @selector(forwardingTargetForSelector:));

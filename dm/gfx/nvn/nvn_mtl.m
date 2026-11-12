@@ -919,6 +919,7 @@ int mtl_addr_known(uint64_t addr, uint64_t len) {
     pthread_mutex_lock(&g_mu); int b = big_of(addr), ok = b >= 0 ? addr + len <= g_big[b].hi : pool_find(addr, len) >= 0; pthread_mutex_unlock(&g_mu);
     return ok;
 }
+static int mtl_addr_extra_fallback(uint64_t addr, uint64_t len, void **buf, uint64_t *off);
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     const pc_ent *c = pc_get(addr, len);
     if (c) { *buf = (__bridge void *)c->buf; *off = addr - c->base; return 1; }
@@ -927,7 +928,19 @@ int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     int i = pool_find(addr, len);
     if (i >= 0) { if (t_tex_upload_lookup) g_pools[i].n_tex_reads++; else g_pools[i].n_other++; }
     if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; ok = 1; }
+    if (!ok) {
+        uint64_t check_len = len > 0 ? len : 1;
+        for (int p = 0; p < g_npool; p++) {
+            if (g_pools[p].gpu && addr >= g_pools[p].gpu && addr + check_len <= g_pools[p].gpu + (g_pools[p].hi - g_pools[p].lo)) {
+                *buf = (__bridge void *)g_pools[p].buf;
+                *off = addr - g_pools[p].gpu;
+                ok = 1;
+                break;
+            }
+        }
+    }
     pthread_mutex_unlock(&g_mu);
+    if (!ok) ok = mtl_addr_extra_fallback(addr, len, buf, off);
     return ok;
 }
 int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_t *gpu) {
@@ -6587,6 +6600,58 @@ void arena_begin(void) {
         if (a->fence && a->fence <= done && a->len > ARENA_KEEP && g_fence > a->fence + ARENA_IDLE) { res_remove(a->buf); [g_arenas removeObjectAtIndex:i]; } }
 }
 void arena_commit(uint64_t fence) { for (NvArena *a in g_sub_arenas) { a->fence = fence; [g_arenas addObject:a]; } [g_sub_arenas removeAllObjects]; g_cur_arena = nil; }
+static int mtl_addr_extra_fallback(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
+    uint64_t check_len = len > 0 ? len : 1;
+    pthread_mutex_lock(&g_mu);
+    if (g_cur_arena && g_cur_arena->gpu && addr >= g_cur_arena->gpu && addr + check_len <= g_cur_arena->gpu + g_cur_arena->len) {
+        *buf = (__bridge void *)g_cur_arena->buf;
+        *off = addr - g_cur_arena->gpu;
+        pthread_mutex_unlock(&g_mu);
+        return 1;
+    }
+    if (g_sub_arenas) {
+        for (NvArena *a in g_sub_arenas) {
+            if (a->gpu && addr >= a->gpu && addr + check_len <= a->gpu + a->len) {
+                *buf = (__bridge void *)a->buf;
+                *off = addr - a->gpu;
+                pthread_mutex_unlock(&g_mu);
+                return 1;
+            }
+        }
+    }
+    if (g_arenas) {
+        for (NvArena *a in g_arenas) {
+            if (a->gpu && addr >= a->gpu && addr + check_len <= a->gpu + a->len) {
+                *buf = (__bridge void *)a->buf;
+                *off = addr - a->gpu;
+                pthread_mutex_unlock(&g_mu);
+                return 1;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_mu);
+
+    pthread_mutex_lock(&g_res_mu);
+    if (g_res_objects) {
+        for (id obj in g_res_objects) {
+            if ([obj conformsToProtocol:@protocol(MTLBuffer)]) {
+                id<MTLBuffer> mb = (id<MTLBuffer>)obj;
+                if ([mb respondsToSelector:@selector(gpuAddress)]) {
+                    uint64_t bgpu = mb.gpuAddress;
+                    NSUInteger blen = mb.length;
+                    if (bgpu && addr >= bgpu && addr + check_len <= bgpu + blen) {
+                        *buf = (__bridge void *)mb;
+                        *off = addr - bgpu;
+                        pthread_mutex_unlock(&g_res_mu);
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_res_mu);
+    return 0;
+}
 // An unqualified id * out-parameter is __autoreleasing under ARC; __strong avoids autoreleasing the arena buffer at every allocation.
 // Measurements: docs/reference/frame-rate.md, Arena buffer ownership on allocation.
 static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf) {
@@ -13460,6 +13525,13 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
         if (depth) [en setDepthStencilState:scopy ? dss_s : dss];
         [en setArgumentTable:at atStages:MTLRenderStageFragment];
         [at setTexture:sv.gpuResourceID atIndex:0]; if (stv) [at setTexture:stv.gpuResourceID atIndex:1]; [at setSamplerState:samp[!!linear && !depth].gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress + po atIndex:0];
+        if ([en respondsToSelector:@selector(setFragmentTexture:atIndex:)]) {
+            id<MTLRenderCommandEncoder> ren = (id<MTLRenderCommandEncoder>)en;
+            [ren setFragmentTexture:sv atIndex:0];
+            if (stv) [ren setFragmentTexture:stv atIndex:1];
+            [ren setFragmentSamplerState:samp[!!linear && !depth] atIndex:0];
+            [ren setFragmentBuffer:pb offset:po atIndex:0];
+        }
         [en setViewport:(MTLViewport){dr->xoffset, dr->yoffset, dr->width, dr->height, 0, 1}];
         [en setScissorRect:(MTLScissorRect){(NSUInteger)dr->xoffset, (NSUInteger)dr->yoffset, (NSUInteger)dr->width, (NSUInteger)dr->height}];
         [en setRenderPipelineState:ps]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; enc_r_end(en);
@@ -13525,6 +13597,12 @@ static void draw_tex(const p_draw_tex *c) {
         ser_gate(); id<MTL4RenderCommandEncoder> en = enc_r_begin(rp);
         [en setArgumentTable:at atStages:MTLRenderStageFragment];
         [at setTexture:t.gpuResourceID atIndex:0]; [at setSamplerState:ss.gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress + po atIndex:0];
+        if ([en respondsToSelector:@selector(setFragmentTexture:atIndex:)]) {
+            id<MTLRenderCommandEncoder> ren = (id<MTLRenderCommandEncoder>)en;
+            [ren setFragmentTexture:t atIndex:0];
+            [ren setFragmentSamplerState:ss atIndex:0];
+            [ren setFragmentBuffer:pb offset:po atIndex:0];
+        }
         [en setViewport:(MTLViewport){0, 0, tw, th, 0, 1}];
         [en setScissorRect:(MTLScissorRect){sx, sy, ex - sx, ey - sy}];
         [en setRenderPipelineState:ps]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; enc_r_end(en);

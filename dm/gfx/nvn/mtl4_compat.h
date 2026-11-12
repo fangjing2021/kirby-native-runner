@@ -39,6 +39,17 @@ typedef uint64_t MTLGPUAddress;
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index;
 @end
 
+@interface DmCompatArgumentTable : NSObject <MTL4ArgumentTable>
+- (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index;
+- (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index;
+- (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index;
+- (void)bindToRenderEncoder:(id)encoder stages:(MTLRenderStages)stages;
+- (void)bindToComputeEncoder:(id)encoder;
+- (void)applyToIndex:(NSUInteger)index;
+- (void)applyAllToEncoder:(id)encoder;
++ (void)notifyEncoderEnded:(id)encoder;
+@end
+
 @protocol MTL4ComputeCommandEncoder <MTLComputeCommandEncoder, MTL4CommandEncoder>
 - (void)setArgumentTable:(id<MTL4ArgumentTable>)table;
 - (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup;

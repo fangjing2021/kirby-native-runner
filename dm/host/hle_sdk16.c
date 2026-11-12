@@ -117,7 +117,7 @@ HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "shared font BFT
 //   cache keeps one per glyph thread), so FSS_load_font ran out of memory (error 201), SetFont failed with 301, every lookup of the "?" glyph missed and nro0+0xaef8a8 crashed on a null pointer. An engine
 //   gets at least FONT_WORK_MIN of host memory then; the game's buffer stays unused, and GetPointerToWorkBuffer still gives it back, which is what the game frees
 #define FONT_WORK_MIN 0x80000   // what the same game's first engine gets, in which that font loads
-#define FONT_ENGINES 16
+#define FONT_ENGINES 256
 static struct { void *self, *game, *host; } font_work[FONT_ENGINES];
 HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj", "a work buffer the stand-in font fits in; the engine itself stays in the SDK", void, h_font_Initialize, void *self, void *buf, unsigned size) {
     static void (*init)(void *, void *, unsigned);
