@@ -7695,6 +7695,14 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         c.pixelFormat = (MTLPixelFormat)k->cfmt[i];
         int l = merged ? k->lmap[i] : i;
         uint32_t m = l == 0xff ? 0 : (k->chmask >> (4 * l)) & 0xf;
+        if (pf_int_kind(c.pixelFormat)) {
+            int is_int_out = fs && ((d.fragmentFunction == fs->fn_u) ||
+                                    (d.fragmentFunction == fs->fn_m && l != 0xff && ((fs->mask_m >> l) & 1)));
+            if (!is_int_out) {
+                c.pixelFormat = MTLPixelFormatInvalid;
+                m = 0;
+            }
+        }
         // Output numbers the fragment shader does not write: zero write mask, no blending. Maxwell writes only the targets in the shader's output map and leaves the others untouched (whatever the blend state and channel mask);
         // on Metal an attachment the shader does not write has undefined contents, and with blending enabled that undefined value is blended in. Super Mario 3D World + Bowser's Fury's volume draws after the G-buffer (50d813761ca3f1f9 and others) write only outputs 0 and 2,
         // while targets 1 (normals) and 3 (pre-lighting) have SRC_ALPHA blending and all channels enabled
@@ -7705,7 +7713,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         else if (fs && fs->rf.omap_known && !fsfn && l != 0xff) m &= fs->rf.omap >> (4 * l) & 0xf;
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
         // Integer targets: no blending. Maxwell ignores the blend enable on them; Metal refuses the pipeline (an assertion even without the API validation layer): Luigi's Mansion 3's integer G-buffer (PR #105)
-        if (!k->logic && l != 0xff && k->blend_en >> l & 1 && !unwritten && !pf_int_kind(c.pixelFormat)) {   // a logic operation takes the place of blending (lop_key)
+        if (!k->logic && l != 0xff && k->blend_en >> l & 1 && !unwritten && c.pixelFormat != MTLPixelFormatInvalid && !pf_int_kind(c.pixelFormat)) {   // a logic operation takes the place of blending (lop_key)
             c.blendingEnabled = YES; blend_st bl = adv_blend(k->blend[l]);
             if (fs && fs->rf.color_known && (!(fs->rf.color_mask & 2) || (dual && !dual_fn)) && !fsfn) {
                 bl.src_rgb = blend_zero_src1(bl.src_rgb); bl.dst_rgb = blend_zero_src1(bl.dst_rgb);
@@ -13117,10 +13125,19 @@ void mtl_prog_prefetch(const prog_t *cp) {
 // DM_NVN_DISPATCH_OWN=1 gives each dispatch its own encoder again (so does DM_NVN_PASSGPU, which times each one)
 static int dispatch_own(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("DM_NVN_DISPATCH_OWN"); v = (e && !strcmp(e, "1")) || pg_on(); if (v) MLOG("compute dispatches: each in an encoder of its own (DM_NVN_DISPATCH_OWN=1 or DM_NVN_PASSGPU)"); }
+    if (v < 0) {
+        const char *e = getenv("DM_NVN_DISPATCH_OWN");
+        v = (e && !strcmp(e, "1")) || pg_on();
+        if (![g_dev respondsToSelector:@selector(supportsFamily:)] || ![g_dev supportsFamily:MTLGPUFamilyMetal4]) v = 1;
+        if (v) MLOG("compute dispatches: each in an encoder of its own (%s)", (![g_dev respondsToSelector:@selector(supportsFamily:)] || ![g_dev supportsFamily:MTLGPUFamilyMetal4]) ? "iOS/Metal 3 blit/compute separation" : "DM_NVN_DISPATCH_OWN=1 or DM_NVN_PASSGPU");
+    }
     return v;
 }
 static id<MTL4ComputeCommandEncoder> dispatch_enc(void) {
+    if (![g_dev respondsToSelector:@selector(supportsFamily:)] || ![g_dev supportsFamily:MTLGPUFamilyMetal4]) {
+        if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+        return (id<MTL4ComputeCommandEncoder>)pg_compute();
+    }
     id<MTL4ComputeCommandEncoder> e = blit_open(); g_gp_disp++;
     if (g_blit_ops) blit_barrier();
     g_bw_lo[0] = 0; g_bw_hi[0] = ~0ull; g_bw_n = 1; g_br_n = 0; g_blit_ops = 1;   // recorded as "everything written": the next copy or dispatch gets a barrier
@@ -13219,9 +13236,12 @@ static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_
     id<MTLBuffer> pb; size_t po = arena_alloc(48, &pb);
     struct { uint64_t s, d; uint32_t w, h, row, img, drow, dimg, shift; } *p = (void *)((uint8_t *)pb.contents + po);
     *p = (typeof(*p)){src, dst, (uint32_t)(wb / 2), (uint32_t)rows, (uint32_t)row, (uint32_t)img, (uint32_t)drow, (uint32_t)dimg, (uint32_t)shift};
-    id<MTL4ComputeCommandEncoder> e = dispatch_enc();
+    int own = dispatch_own();
+    if (own && g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    id<MTLComputeCommandEncoder> e = own ? pg_compute() : (id<MTLComputeCommandEncoder>)dispatch_enc();
     [g_ct setAddress:pb.gpuAddress + po atIndex:0]; enc_c_pso(e, ps);
     enc_c_dispatch(e, MTLSizeMake((wb / 2 + 63) / 64, rows, nz), MTLSizeMake(64, 1, 1));
+    if (own) enc_c_end(e);
     static int once; if (!once++) MLOG("RGB565-family copy between guest memory and a host texture: red and blue exchanged on the GPU (first case %zux%zux%zu texels)", wb / 2, rows, nz);
     return 1;
 }
