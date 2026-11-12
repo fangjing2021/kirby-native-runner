@@ -26,6 +26,8 @@ jobs:
             build/ios/dmsh_b
             build/shcache
           key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz', 'dm/games/01004D300C5AE000/shader_facts.tsv', 'dm/games/01004D300C5AE000/shader_facts_manual.tsv') }}
+          restore-keys: |
+            kirby-shaders-
 
       - name: Run Build Script
         run: |

@@ -119,6 +119,9 @@ static inline DmCompatArgumentTable *unwrap_compat_table(id obj) {
     return nil;
 }
 
+static __unsafe_unretained id s_active_render_enc = nil;
+static __unsafe_unretained id s_active_compute_enc = nil;
+
 static __unsafe_unretained DmCompatArgumentTable *s_active_vt = nil;
 static __unsafe_unretained DmCompatArgumentTable *s_active_ft = nil;
 static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
@@ -134,35 +137,45 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 }
 
 + (void)notifyEncoderEnded:(id)encoder {
-    if (s_active_vt && s_active_vt->_encoder == encoder) {
+    if (!encoder) return;
+    if (s_active_render_enc == encoder) s_active_render_enc = nil;
+    if (s_active_compute_enc == encoder) s_active_compute_enc = nil;
+    if (s_active_vt && (s_active_vt->_encoder == encoder || !s_active_render_enc)) {
         s_active_vt->_encoder = nil;
         s_active_vt = nil;
     }
-    if (s_active_ft && s_active_ft->_encoder == encoder) {
+    if (s_active_ft && (s_active_ft->_encoder == encoder || !s_active_render_enc)) {
         s_active_ft->_encoder = nil;
         s_active_ft = nil;
     }
-    if (s_active_ct && s_active_ct->_encoder == encoder) {
+    if (s_active_ct && (s_active_ct->_encoder == encoder || !s_active_compute_enc)) {
         s_active_ct->_encoder = nil;
         s_active_ct = nil;
     }
 }
 
 - (void)applyToIndex:(NSUInteger)index {
-    if (index >= 32 || !(_valid_mask & (1u << index)) || !_encoder) return;
-    id<MTLBuffer> buf = _buffers[index];
-    NSUInteger off = _offsets[index];
-    if (!buf) return;
+    if (index >= 32 || !(_valid_mask & (1u << index))) return;
+    id enc = _encoder;
+    if (!enc) return;
     if (_is_compute) {
-        if ([_encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
-            [(id<MTLComputeCommandEncoder>)_encoder setBuffer:buf offset:off atIndex:index];
+        if (enc != s_active_compute_enc) { _encoder = nil; return; }
+        id<MTLBuffer> buf = _buffers[index];
+        NSUInteger off = _offsets[index];
+        if (!buf) return;
+        if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+            [(id<MTLComputeCommandEncoder>)enc setBuffer:buf offset:off atIndex:index];
         }
     } else {
-        if ((_render_stages & MTLRenderStageVertex) && [_encoder respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
-            [(id<MTLRenderCommandEncoder>)_encoder setVertexBuffer:buf offset:off atIndex:index];
+        if (enc != s_active_render_enc) { _encoder = nil; return; }
+        id<MTLBuffer> buf = _buffers[index];
+        NSUInteger off = _offsets[index];
+        if (!buf) return;
+        if ((_render_stages & MTLRenderStageVertex) && [enc respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)enc setVertexBuffer:buf offset:off atIndex:index];
         }
-        if ((_render_stages & MTLRenderStageFragment) && [_encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
-            [(id<MTLRenderCommandEncoder>)_encoder setFragmentBuffer:buf offset:off atIndex:index];
+        if ((_render_stages & MTLRenderStageFragment) && [enc respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)enc setFragmentBuffer:buf offset:off atIndex:index];
         }
     }
 }
@@ -218,6 +231,7 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index { (void)sampler; (void)index; }
 
 - (void)bindToRenderEncoder:(id)encoder stages:(MTLRenderStages)stages {
+    s_active_render_enc = encoder;
     _encoder = encoder;
     _render_stages = stages;
     _is_compute = NO;
@@ -227,6 +241,7 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 }
 
 - (void)bindToComputeEncoder:(id)encoder {
+    s_active_compute_enc = encoder;
     _encoder = encoder;
     _is_compute = YES;
     _render_stages = 0;

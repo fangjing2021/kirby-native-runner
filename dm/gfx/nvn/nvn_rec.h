@@ -126,7 +126,7 @@ static void rec_exec(const rec_t *r) {
     case RO_RE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb renderCommandEncoderWithDescriptor:rec_id(a[0])]; break;
     case RO_CE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb computeCommandEncoder]; break;
     case RO_BE_BEGIN: g_rx_enc = [(id<MTLCommandBuffer>)g_rx_cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)g_rx_cb blitCommandEncoder] : [(id<MTLCommandBuffer>)g_rx_cb computeCommandEncoder]; break;
-    case RO_END: [(id<MTL4CommandEncoder>)e endEncoding]; g_rx_enc = nil; break;
+    case RO_END: [DmCompatArgumentTable notifyEncoderEnded:e]; [(id<MTL4CommandEncoder>)e endEncoding]; g_rx_enc = nil; break;
     case RO_BAR_QUEUE: [(id<MTL4CommandEncoder>)e barrierAfterQueueStages:a[0] beforeStages:a[1] visibilityOptions:a[2]]; break;
     case RO_BAR_AFTER_STAGES: [(id<MTL4CommandEncoder>)e barrierAfterStages:a[0] beforeQueueStages:a[1] visibilityOptions:a[2]]; break;
     case RO_BAR_ENCODER: [(id<MTL4CommandEncoder>)e barrierAfterEncoderStages:a[0] beforeEncoderStages:a[1] visibilityOptions:a[2]]; break;
