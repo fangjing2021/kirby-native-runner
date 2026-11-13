@@ -48,6 +48,7 @@ typedef uint64_t MTLGPUAddress;
 - (void)applyToIndex:(NSUInteger)index;
 - (void)applyAllToEncoder:(id)encoder;
 + (void)notifyEncoderEnded:(id)encoder;
++ (void)ensureArgsForEncoder:(id)encoder;
 @end
 
 @protocol MTL4ComputeCommandEncoder <MTLComputeCommandEncoder, MTL4CommandEncoder>

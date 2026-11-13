@@ -160,6 +160,23 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
     os_unfair_lock_unlock(&s_tables_lock);
 }
 
+static char kCompatVtKey;
+static char kCompatFtKey;
+static char kCompatCtKey;
+
++ (void)ensureArgsForEncoder:(id)encoder {
+    if (!encoder) return;
+    DmCompatArgumentTable *vt = objc_getAssociatedObject(encoder, &kCompatVtKey);
+    DmCompatArgumentTable *ft = objc_getAssociatedObject(encoder, &kCompatFtKey);
+    DmCompatArgumentTable *ct = objc_getAssociatedObject(encoder, &kCompatCtKey);
+    if (!vt) vt = s_active_vt;
+    if (!ft) ft = s_active_ft;
+    if (!ct) ct = s_active_ct;
+    if (vt) [vt applyAllToEncoder:encoder];
+    if (ft) [ft applyAllToEncoder:encoder];
+    if (ct) [ct applyAllToEncoder:encoder];
+}
+
 + (void)notifyEncoderEnded:(id)encoder {
     if (!encoder) return;
     os_unfair_lock_lock(&s_tables_lock);
@@ -169,9 +186,6 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
             t->_encoder = nil;
         }
     }
-    if (s_active_vt && s_active_vt->_encoder == nil) s_active_vt = nil;
-    if (s_active_ft && s_active_ft->_encoder == nil) s_active_ft = nil;
-    if (s_active_ct && s_active_ct->_encoder == nil) s_active_ct = nil;
     os_unfair_lock_unlock(&s_tables_lock);
 }
 
@@ -250,8 +264,14 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
     _encoder = encoder;
     _render_stages = stages;
     _is_compute = NO;
-    if (stages & MTLRenderStageVertex) s_active_vt = self;
-    if (stages & MTLRenderStageFragment) s_active_ft = self;
+    if (stages & MTLRenderStageVertex) {
+        s_active_vt = self;
+        if (encoder) objc_setAssociatedObject(encoder, &kCompatVtKey, self, OBJC_ASSOCIATION_ASSIGN);
+    }
+    if (stages & MTLRenderStageFragment) {
+        s_active_ft = self;
+        if (encoder) objc_setAssociatedObject(encoder, &kCompatFtKey, self, OBJC_ASSOCIATION_ASSIGN);
+    }
     [self applyAllToEncoder:encoder];
 }
 
@@ -260,6 +280,7 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
     _is_compute = YES;
     _render_stages = 0;
     s_active_ct = self;
+    if (encoder) objc_setAssociatedObject(encoder, &kCompatCtKey, self, OBJC_ASSOCIATION_ASSIGN);
     [self applyAllToEncoder:encoder];
 }
 @end
@@ -410,7 +431,6 @@ static id<MTLCommandQueue> s_compat_queue;
 }
 - (void)waitForDrawable:(id)dr { (void)dr; }
 - (void)signalDrawable:(id)dr { (void)dr; }
-- (void)addResidencySet:(id)set { (void)set; }
 
 - (void)signalEvent:(id)event value:(uint64_t)value {
     if ([event respondsToSelector:@selector(setSignaledValue:)]) {
@@ -573,7 +593,7 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
-    if (s_active_ct) [s_active_ct applyAllToEncoder:self];
+    [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
     if (mtl_addr(indirectBuffer, 12, &ind_buf, &ind_off)) {
@@ -583,8 +603,7 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)drawPrimitives:(MTLPrimitiveType)primitiveType indirectBuffer:(uint64_t)indirectBuffer {
-    if (s_active_vt) [s_active_vt applyAllToEncoder:self];
-    if (s_active_ft) [s_active_ft applyAllToEncoder:self];
+    [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
     if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off)) {
@@ -594,8 +613,7 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexCount:(NSUInteger)indexCount indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength instanceCount:(NSUInteger)instanceCount baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance {
-    if (s_active_vt) [s_active_vt applyAllToEncoder:self];
-    if (s_active_ft) [s_active_ft applyAllToEncoder:self];
+    [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *buf = NULL;
     uint64_t off = 0;
     if (mtl_addr(indexBuffer, indexBufferLength, &buf, &off)) {
@@ -605,8 +623,7 @@ static id<MTLCommandQueue> s_compat_queue;
     }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength indirectBuffer:(uint64_t)indirectBuffer {
-    if (s_active_vt) [s_active_vt applyAllToEncoder:self];
-    if (s_active_ft) [s_active_ft applyAllToEncoder:self];
+    [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *ibuf = NULL, *ind_buf = NULL;
     uint64_t ioff = 0, ind_off = 0;
     if (mtl_addr(indexBuffer, indexBufferLength, &ibuf, &ioff) && mtl_addr(indirectBuffer, 20, &ind_buf, &ind_off)) {
