@@ -110,10 +110,10 @@ static inline id rec_ensure_compute(id cb, id cur_enc) {
     if (cur_enc && ![cur_enc respondsToSelector:@selector(setComputePipelineState:)]) {
         [DmCompatArgumentTable notifyEncoderEnded:cur_enc];
         [(id<MTL4CommandEncoder>)cur_enc endEncoding];
-        cur_enc = nil;
+        return [(id<MTL4CommandBuffer>)cb computeCommandEncoder];
     }
     if (!cur_enc) {
-        cur_enc = [(id<MTL4CommandBuffer>)cb computeCommandEncoder];
+        return [(id<MTL4CommandBuffer>)cb computeCommandEncoder];
     }
     return cur_enc;
 }
@@ -121,10 +121,10 @@ static inline id rec_ensure_blit(id cb, id cur_enc) {
     if (cur_enc && ![cur_enc respondsToSelector:@selector(copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:)]) {
         [DmCompatArgumentTable notifyEncoderEnded:cur_enc];
         [(id<MTL4CommandEncoder>)cur_enc endEncoding];
-        cur_enc = nil;
+        return [(id<MTLCommandBuffer>)cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)cb blitCommandEncoder] : [(id<MTLCommandBuffer>)cb computeCommandEncoder];
     }
     if (!cur_enc) {
-        cur_enc = [(id<MTLCommandBuffer>)cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)cb blitCommandEncoder] : [(id<MTLCommandBuffer>)cb computeCommandEncoder];
+        return [(id<MTLCommandBuffer>)cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)cb blitCommandEncoder] : [(id<MTLCommandBuffer>)cb computeCommandEncoder];
     }
     return cur_enc;
 }
