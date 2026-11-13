@@ -254,7 +254,7 @@ typedef NS_ENUM(NSUInteger, MTL4TimestampGranularity) {
 #define MTL4PipelineDataSetSerializerConfigurationCaptureBinaries 0
 
 #ifndef MTLGPUFamilyMetal4
-#define MTLGPUFamilyMetal4 ((MTLGPUFamily)5001)
+#define MTLGPUFamilyMetal4 ((MTLGPUFamily)6001)
 #endif
 
 #ifndef MTL4CommandQueueErrorDomain

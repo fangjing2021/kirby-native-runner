@@ -13137,12 +13137,20 @@ static int dispatch_own(void) {
     if (v < 0) {
         const char *e = getenv("DM_NVN_DISPATCH_OWN");
         v = (e && !strcmp(e, "1")) || pg_on();
+#if TARGET_OS_IPHONE
+        v = 1;
+#else
         if (![g_dev respondsToSelector:@selector(supportsFamily:)] || ![g_dev supportsFamily:MTLGPUFamilyMetal4]) v = 1;
+#endif
         if (v) MLOG("compute dispatches: each in an encoder of its own (%s)", (![g_dev respondsToSelector:@selector(supportsFamily:)] || ![g_dev supportsFamily:MTLGPUFamilyMetal4]) ? "iOS/Metal 3 blit/compute separation" : "DM_NVN_DISPATCH_OWN=1 or DM_NVN_PASSGPU");
     }
     return v;
 }
 static id<MTL4ComputeCommandEncoder> dispatch_enc(void) {
+#if TARGET_OS_IPHONE
+    if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    return (id<MTL4ComputeCommandEncoder>)pg_compute();
+#else
     if (![g_dev respondsToSelector:@selector(supportsFamily:)] || ![g_dev supportsFamily:MTLGPUFamilyMetal4]) {
         if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
         return (id<MTL4ComputeCommandEncoder>)pg_compute();
@@ -13153,6 +13161,7 @@ static id<MTL4ComputeCommandEncoder> dispatch_enc(void) {
     if (!g_blit_ct) { [e setArgumentTable:g_ct]; g_blit_ct = 1; }
     args_dirty_all();
     return e;
+#endif
 }
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();

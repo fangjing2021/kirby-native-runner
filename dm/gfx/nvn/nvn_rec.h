@@ -106,6 +106,28 @@ static void rec_note_wait(_Atomic uint64_t *p, uint64_t v) {
 
 // ---------- The encode thread ----------
 static id g_rx_cb, g_rx_enc;   // the encode thread's real command buffer and open encoder
+static inline id rec_ensure_compute(id cb, id cur_enc) {
+    if (cur_enc && ![cur_enc respondsToSelector:@selector(setComputePipelineState:)]) {
+        [DmCompatArgumentTable notifyEncoderEnded:cur_enc];
+        [(id<MTL4CommandEncoder>)cur_enc endEncoding];
+        cur_enc = nil;
+    }
+    if (!cur_enc) {
+        cur_enc = [(id<MTL4CommandBuffer>)cb computeCommandEncoder];
+    }
+    return cur_enc;
+}
+static inline id rec_ensure_blit(id cb, id cur_enc) {
+    if (cur_enc && ![cur_enc respondsToSelector:@selector(copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:)]) {
+        [DmCompatArgumentTable notifyEncoderEnded:cur_enc];
+        [(id<MTL4CommandEncoder>)cur_enc endEncoding];
+        cur_enc = nil;
+    }
+    if (!cur_enc) {
+        cur_enc = [(id<MTLCommandBuffer>)cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)cb blitCommandEncoder] : [(id<MTLCommandBuffer>)cb computeCommandEncoder];
+    }
+    return cur_enc;
+}
 static void rec_exec(const rec_t *r) {
     const uint64_t *a = r->a; id e = g_rx_enc;
     switch (r->op) {
@@ -166,22 +188,44 @@ static void rec_exec(const rec_t *r) {
     case RO_R_STORE_C: [(id<MTL4RenderCommandEncoder>)e setColorStoreAction:a[0] atIndex:a[1]]; break;
     case RO_R_STORE_D: [(id<MTL4RenderCommandEncoder>)e setDepthStoreAction:a[0]]; break;
     case RO_R_STORE_S: [(id<MTL4RenderCommandEncoder>)e setStencilStoreAction:a[0]]; break;
-    case RO_C_TABLE: [(id<MTL4ComputeCommandEncoder>)e setArgumentTable:rec_id(a[0])]; break;
-    case RO_C_PSO: [(id<MTL4ComputeCommandEncoder>)e setComputePipelineState:rec_id(a[0])]; break;
-    case RO_C_DISPATCH: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroups:MTLSizeMake(a[0], a[1], a[2]) threadsPerThreadgroup:MTLSizeMake(a[3], a[4], a[5])]; break;
-    case RO_C_DISPATCH_IND: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:a[0] threadsPerThreadgroup:MTLSizeMake(a[1], a[2], a[3])]; break;
-    case RO_C_COPY_BB: [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] toBuffer:rec_id(a[1]) destinationOffset:a[3] size:a[4]]; break;
-    case RO_C_COPY_BT: [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7])
-                           toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12])]; break;
-    case RO_C_COPY_BT_OPT: [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7])
-                           toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12]) options:(MTLBlitOption)a[13]]; break;
-    case RO_C_COPY_TB: [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
-                           toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12]]; break;
-    case RO_C_COPY_TB_OPT: [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
-                           toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12] options:(MTLBlitOption)a[13]]; break;
-    case RO_C_COPY_TT: [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
-                           toTexture:rec_id(a[1]) destinationSlice:a[10] destinationLevel:a[11] destinationOrigin:MTLOriginMake(a[12], a[13], a[14])]; break;
-    case RO_C_FILL: [(id<MTL4ComputeCommandEncoder>)e fillBuffer:rec_id(a[0]) range:NSMakeRange(a[1], a[2]) value:(uint8_t)a[3]]; break;
+    case RO_C_TABLE:
+        e = rec_ensure_compute(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e setArgumentTable:rec_id(a[0])]; break;
+    case RO_C_PSO:
+        e = rec_ensure_compute(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e setComputePipelineState:rec_id(a[0])]; break;
+    case RO_C_DISPATCH:
+        e = rec_ensure_compute(g_rx_cb, e); g_rx_enc = e;
+        [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroups:MTLSizeMake(a[0], a[1], a[2]) threadsPerThreadgroup:MTLSizeMake(a[3], a[4], a[5])]; break;
+    case RO_C_DISPATCH_IND:
+        e = rec_ensure_compute(g_rx_cb, e); g_rx_enc = e;
+        [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:a[0] threadsPerThreadgroup:MTLSizeMake(a[1], a[2], a[3])]; break;
+    case RO_C_COPY_BB:
+        e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] toBuffer:rec_id(a[1]) destinationOffset:a[3] size:a[4]]; break;
+    case RO_C_COPY_BT:
+        e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7])
+                               toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12])]; break;
+    case RO_C_COPY_BT_OPT:
+        e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7])
+                               toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12]) options:(MTLBlitOption)a[13]]; break;
+    case RO_C_COPY_TB:
+        e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
+                               toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12]]; break;
+    case RO_C_COPY_TB_OPT:
+        e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
+                               toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12] options:(MTLBlitOption)a[13]]; break;
+    case RO_C_COPY_TT:
+        e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
+                               toTexture:rec_id(a[1]) destinationSlice:a[10] destinationLevel:a[11] destinationOrigin:MTLOriginMake(a[12], a[13], a[14])]; break;
+    case RO_C_FILL:
+        e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
+        [(id<MTL4ComputeCommandEncoder>)e fillBuffer:rec_id(a[0]) range:NSMakeRange(a[1], a[2]) value:(uint8_t)a[3]]; break;
     case RO_T_ADDR: [(id<MTL4ArgumentTable>)rec_id(a[0]) setAddress:a[1] atIndex:a[2]]; break;
     case RO_T_TEX: [(id<MTL4ArgumentTable>)rec_id(a[0]) setTexture:(MTLResourceID){a[1]} atIndex:a[2]]; break;
     case RO_T_SAMP: [(id<MTL4ArgumentTable>)rec_id(a[0]) setSamplerState:(MTLResourceID){a[1]} atIndex:a[2]]; break;
