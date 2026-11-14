@@ -365,14 +365,51 @@ static id<MTLCommandQueue> s_compat_queue;
 @implementation NSObject (MTL4CompatObject)
 - (void)beginCommandBufferWithAllocator:(id)allocator { (void)allocator; }
 - (void)endCommandBuffer {}
+static char kFenceKey;
+static char kFenceUpdatedKey;
+
 - (void)barrierAfterStages:(NSUInteger)after beforeQueueStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
+    id cb = [self respondsToSelector:@selector(commandBuffer)] ? [(id)self commandBuffer] : nil;
+    if (!cb) return;
+    id<MTLFence> f = objc_getAssociatedObject(cb, &kFenceKey);
+    if (!f && [cb respondsToSelector:@selector(device)]) {
+        id dev = [cb device];
+        if (dev) {
+            f = [dev newFence];
+            if (f) {
+                objc_setAssociatedObject(cb, &kFenceKey, f, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+    }
+    if (f) {
+        if ([self respondsToSelector:@selector(updateFence:afterStages:)]) {
+            [(id<MTLRenderCommandEncoder>)self updateFence:f afterStages:MTLRenderStageFragment];
+            objc_setAssociatedObject(cb, &kFenceUpdatedKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else if ([self respondsToSelector:@selector(updateFence:)]) {
+            [(id<MTLComputeCommandEncoder>)self updateFence:f];
+            objc_setAssociatedObject(cb, &kFenceUpdatedKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
 }
 - (void)barrierAfterEncoderStages:(NSUInteger)after beforeEncoderStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
 }
 - (void)barrierAfterQueueStages:(NSUInteger)after beforeStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
+    id cb = [self respondsToSelector:@selector(commandBuffer)] ? [(id)self commandBuffer] : nil;
+    if (!cb) return;
+    if (!objc_getAssociatedObject(cb, &kFenceUpdatedKey)) return;
+    id<MTLFence> f = objc_getAssociatedObject(cb, &kFenceKey);
+    if (f) {
+        if ([self respondsToSelector:@selector(waitForFence:beforeStages:)]) {
+            [(id<MTLRenderCommandEncoder>)self waitForFence:f beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+            objc_setAssociatedObject(cb, &kFenceUpdatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else if ([self respondsToSelector:@selector(waitForFence:)]) {
+            [(id<MTLComputeCommandEncoder>)self waitForFence:f];
+            objc_setAssociatedObject(cb, &kFenceUpdatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
 }
 - (void)setArgumentTable:(id)table {
     DmCompatArgumentTable *t = unwrap_compat_table(table);
