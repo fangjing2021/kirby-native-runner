@@ -362,53 +362,100 @@ static id<MTLCommandQueue> s_compat_queue;
 }
 @end
 
+@interface DmCbFenceTracker : NSObject {
+@public
+    id<MTLFence> _fences[2];
+    int _nextUpdateIdx;
+    int _readyWaitIdx;
+    BOOL _hasUpdate;
+    void *_lastUpdatingEncoder;
+}
+@end
+
+@implementation DmCbFenceTracker
+- (instancetype)initWithDevice:(id<MTLDevice>)dev {
+    if ((self = [super init])) {
+        _fences[0] = [dev newFence];
+        _fences[1] = [dev newFence];
+        _nextUpdateIdx = 0;
+        _readyWaitIdx = -1;
+        _hasUpdate = NO;
+        _lastUpdatingEncoder = NULL;
+    }
+    return self;
+}
+- (void)dealloc {
+    [_fences[0] release];
+    [_fences[1] release];
+    [super dealloc];
+}
+@end
+
+static char kFenceKey;
+
 @implementation NSObject (MTL4CompatObject)
 - (void)beginCommandBufferWithAllocator:(id)allocator { (void)allocator; }
 - (void)endCommandBuffer {}
-static char kFenceKey;
-static char kFenceUpdatedKey;
 
 - (void)barrierAfterStages:(NSUInteger)after beforeQueueStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
     id cb = [self respondsToSelector:@selector(commandBuffer)] ? [(id)self commandBuffer] : nil;
     if (!cb) return;
-    id<MTLFence> f = objc_getAssociatedObject(cb, &kFenceKey);
-    if (!f && [cb respondsToSelector:@selector(device)]) {
+    DmCbFenceTracker *tracker = objc_getAssociatedObject(cb, &kFenceKey);
+    if (!tracker && [cb respondsToSelector:@selector(device)]) {
         id dev = [cb device];
         if (dev) {
-            f = [dev newFence];
-            if (f) {
-                objc_setAssociatedObject(cb, &kFenceKey, f, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            tracker = [[[DmCbFenceTracker alloc] initWithDevice:dev] autorelease];
+            if (tracker) {
+                objc_setAssociatedObject(cb, &kFenceKey, tracker, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         }
     }
+    if (!tracker || !tracker->_fences[0] || !tracker->_fences[1]) return;
+    if (tracker->_hasUpdate && tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
+    
+    int uIdx = tracker->_nextUpdateIdx;
+    id<MTLFence> f = tracker->_fences[uIdx];
     if (f) {
         if ([self respondsToSelector:@selector(updateFence:afterStages:)]) {
             [(id<MTLRenderCommandEncoder>)self updateFence:f afterStages:MTLRenderStageFragment];
-            objc_setAssociatedObject(cb, &kFenceUpdatedKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else if ([self respondsToSelector:@selector(updateFence:)]) {
             [(id<MTLComputeCommandEncoder>)self updateFence:f];
-            objc_setAssociatedObject(cb, &kFenceUpdatedKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+            return;
         }
+        tracker->_readyWaitIdx = uIdx;
+        tracker->_hasUpdate = YES;
+        tracker->_lastUpdatingEncoder = (__bridge void *)self;
+        tracker->_nextUpdateIdx = (uIdx + 1) % 2;
     }
 }
 - (void)barrierAfterEncoderStages:(NSUInteger)after beforeEncoderStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
-    (void)after; (void)before; (void)vis;
+    (void)vis;
+    if ([self respondsToSelector:@selector(memoryBarrierWithScope:afterStages:beforeStages:)]) {
+        [(id<MTLRenderCommandEncoder>)self memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures afterStages:MTLRenderStageFragment beforeStages:MTLRenderStageVertex];
+    }
 }
 - (void)barrierAfterQueueStages:(NSUInteger)after beforeStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
     id cb = [self respondsToSelector:@selector(commandBuffer)] ? [(id)self commandBuffer] : nil;
     if (!cb) return;
-    if (!objc_getAssociatedObject(cb, &kFenceUpdatedKey)) return;
-    id<MTLFence> f = objc_getAssociatedObject(cb, &kFenceKey);
+    DmCbFenceTracker *tracker = objc_getAssociatedObject(cb, &kFenceKey);
+    if (!tracker || !tracker->_hasUpdate || tracker->_readyWaitIdx < 0) return;
+    if (tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
+    
+    int wIdx = tracker->_readyWaitIdx;
+    id<MTLFence> f = tracker->_fences[wIdx];
     if (f) {
         if ([self respondsToSelector:@selector(waitForFence:beforeStages:)]) {
             [(id<MTLRenderCommandEncoder>)self waitForFence:f beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
-            objc_setAssociatedObject(cb, &kFenceUpdatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else if ([self respondsToSelector:@selector(waitForFence:)]) {
             [(id<MTLComputeCommandEncoder>)self waitForFence:f];
-            objc_setAssociatedObject(cb, &kFenceUpdatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+            return;
         }
+        tracker->_hasUpdate = NO;
+        tracker->_readyWaitIdx = -1;
     }
 }
 - (void)setArgumentTable:(id)table {
