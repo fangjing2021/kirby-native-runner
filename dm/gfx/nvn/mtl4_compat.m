@@ -365,14 +365,47 @@ static id<MTLCommandQueue> s_compat_queue;
 @implementation NSObject (MTL4CompatObject)
 - (void)beginCommandBufferWithAllocator:(id)allocator { (void)allocator; }
 - (void)endCommandBuffer {}
+static id<MTLFence> s_compat_fence;
+static os_unfair_lock s_fence_lock = OS_UNFAIR_LOCK_INIT;
+
+static inline id<MTLFence> get_compat_fence(id encoder) {
+    if (!s_compat_fence && [encoder respondsToSelector:@selector(device)]) {
+        id dev = [(id)encoder device];
+        if (dev) {
+            os_unfair_lock_lock(&s_fence_lock);
+            if (!s_compat_fence) {
+                s_compat_fence = [dev newFence];
+            }
+            os_unfair_lock_unlock(&s_fence_lock);
+        }
+    }
+    return s_compat_fence;
+}
+
 - (void)barrierAfterStages:(NSUInteger)after beforeQueueStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
+    id<MTLFence> f = get_compat_fence(self);
+    if (f) {
+        if ([self respondsToSelector:@selector(updateFence:afterStages:)]) {
+            [(id<MTLRenderCommandEncoder>)self updateFence:f afterStages:MTLRenderStageFragment];
+        } else if ([self respondsToSelector:@selector(updateFence:)]) {
+            [(id<MTLComputeCommandEncoder>)self updateFence:f];
+        }
+    }
 }
 - (void)barrierAfterEncoderStages:(NSUInteger)after beforeEncoderStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
 }
 - (void)barrierAfterQueueStages:(NSUInteger)after beforeStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
+    id<MTLFence> f = get_compat_fence(self);
+    if (f) {
+        if ([self respondsToSelector:@selector(waitForFence:beforeStages:)]) {
+            [(id<MTLRenderCommandEncoder>)self waitForFence:f beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+        } else if ([self respondsToSelector:@selector(waitForFence:)]) {
+            [(id<MTLComputeCommandEncoder>)self waitForFence:f];
+        }
+    }
 }
 - (void)setArgumentTable:(id)table {
     DmCompatArgumentTable *t = unwrap_compat_table(table);
