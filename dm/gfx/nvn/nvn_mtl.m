@@ -136,7 +136,6 @@ static int g_res_dirty;
 static id<MTLSharedEvent> g_ev;
 static _Atomic uint64_t g_fence;                // Highest committed fence value (incremented exclusively by the submit thread)
 static int g_cut_copy;                          // a buffer → texture copy was encoded since the last commit: the next pass boundary commits the segment (sub_cut)
-static int g_cut_pingpong;                      // a render target was reused within the current command buffer: commit segment (sub_cut)
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static _Atomic uint64_t g_done;                 // GPU complete and all CPU-visible effects through this fence published
@@ -2266,7 +2265,6 @@ uint64_t mtl_sub_commit(void) {
     up_flush();
     gmem_commit_patch();
     g_cut_copy = 0;
-    g_cut_pingpong = 0;
     treg_finish_submission();   // Late descriptor views retire behind this submission's fence.
     rt_preserve_bound();   // The game may reuse completed command memory; queue bindings must not point into its texture snapshots.
     queue_program_preserve(); // Submitted metadata may retire while these programs remain bound.
@@ -14020,40 +14018,26 @@ static int cut_draws(void) {
     }
     return v;
 }
-static uint64_t g_cut_draw0, g_cuts, g_copy_cuts, g_pingpong_cuts;
-static uint64_t g_seg_rt[64], g_seg_last_rt;
-static int g_seg_nrt;
-static uint64_t g_seg_drt[64], g_seg_last_drt;
-static int g_seg_ndrt;
+static uint64_t g_cut_draw0, g_cuts, g_copy_cuts;
 // The count starts with the submission (mtl_sub_begin). It used to start at the submission's first sub_cut, which only a render target change reaches (OP_SET_RT): the draws a
 // submission makes into the target it inherited, before its first target change, were never counted, and the first segment came that many draws late
-static void sub_cut_begin(void) {
-    g_cut_draw0 = g_stat_draw;
-    g_cut_pingpong = 0;
-    g_seg_nrt = g_seg_ndrt = 0;
-    g_seg_last_rt = g_seg_last_drt = 0;
-}
+static void sub_cut_begin(void) { g_cut_draw0 = g_stat_draw; }
 // DM_FSTEP_PROBE_RAMP=1 (default) / 0 / ab: a frame-step probe's grace is renewed while its frames keep getting cheaper (nvn_fstep.h FSTEP_RAMP), the time macOS's GPU clock takes to rise for the shorter deadline
 static int probe_ramp_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_FSTEP_PROBE_RAMP", 1); return m; }
 int mtl_probe_ramp_on(void) { return sw_on(probe_ramp_mode()); }
 static void sub_cut(void) {
     int n = cut_draws();
     if (!g_cb || g_enc) return;
-    int force = g_cut_copy || g_cut_pingpong;
-    if ((!force && (n <= 0 || g_stat_draw - g_cut_draw0 < (uint64_t)n)) || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_rt_merged) return;
+    if ((!g_cut_copy && (n <= 0 || g_stat_draw - g_cut_draw0 < (uint64_t)n)) || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_rt_merged) return;
     // The cut is there so that the GPU does not sit idle while the host encodes. With earlier work still running a commit gains nothing and queues one more command buffer: each is a call into the kernel on Metal's one submission queue, and with buffers queued behind running work
     // the GPU waited 5-40 ms with the next one already committed (docs/reference/frame-rate.md). So it stays a boundary for the game's timestamps (ts_boundary), with the commit left for when the GPU has run out. A copy still commits, as its data must land. DM_NVN_CUT_BUSY=0: every cut commits
     static int busy = -1; if (busy < 0) { const char *e = getenv("DM_NVN_CUT_BUSY"); busy = !e || atoi(e) != 0; }
-    if (busy && !force && (!seg_ts() || ts_on()) && atomic_load_explicit(&g_seg_inflight, memory_order_relaxed) > 0) {
+    if (busy && !g_cut_copy && (!seg_ts() || ts_on()) && atomic_load_explicit(&g_seg_inflight, memory_order_relaxed) > 0) {
         if (ts_on()) { ts_boundary(); g_seg++; }
         g_cut_draw0 = g_stat_draw; return; }
     if (ts_on()) ts_boundary();
     if (g_cut_copy) g_copy_cuts++;
-    if (g_cut_pingpong) g_pingpong_cuts++;
     g_cut_copy = 0;
-    g_cut_pingpong = 0;
-    g_seg_nrt = g_seg_ndrt = 0;
-    g_seg_last_rt = g_seg_last_drt = 0;
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     up_flush();
     uint64_t f = atomic_load(&g_cur_frame); gpu_tag_begin(f);
@@ -14309,44 +14293,7 @@ void mtl_exec(const uint8_t *p) {
                     if (sm_rt_slice(&R.rt, r, &sl) && sl >= g_sm_lo && sl <= g_sm_hi) { R.rt = *r; g_sm_cur = sl; g_sm_ncont++;
                         { void td_note_layer(id<MTLTexture>, uint64_t, NSUInteger, NSUInteger); td_note_layer(tex_mtl(r->color[0]), r->color[0]->serial, r->cview[0].set_levels ? r->cview[0].base_level : 0, (NSUInteger)sl); } PD("M %llu slice-merged pass goes on in layer %d", g_stat_pass, sl); break; } }
                 if (pend && !g_enc && g_cb && lc_on()) lc_push(); else rp_flush();   // clears with no draw wait for the next pass that attaches their targets (lc_push)
-                int pingpong = 0;
-                for (int i = 0; i < r->n && i < 8; i++) {
-                    uint64_t ser = r->color[i] ? r->color[i]->serial : 0;
-                    if (ser && ser != g_seg_last_rt) {
-                        for (int k = 0; k < g_seg_nrt; k++) {
-                            if (g_seg_rt[k] == ser) { pingpong = 1; break; }
-                        }
-                    }
-                }
-                if (!pingpong && r->depth) {
-                    uint64_t dser = r->depth->serial;
-                    if (dser && dser != g_seg_last_drt) {
-                        for (int k = 0; k < g_seg_ndrt; k++) {
-                            if (g_seg_drt[k] == dser) { pingpong = 1; break; }
-                        }
-                    }
-                }
-                if (pingpong) g_cut_pingpong = 1;
-                sub_cut();
-                for (int i = 0; i < r->n && i < 8; i++) {
-                    uint64_t cser = r->color[i] ? r->color[i]->serial : 0;
-                    if (cser) {
-                        int have = 0;
-                        for (int k = 0; k < g_seg_nrt; k++) if (g_seg_rt[k] == cser) { have = 1; break; }
-                        if (!have && g_seg_nrt < 64) g_seg_rt[g_seg_nrt++] = cser;
-                    }
-                }
-                g_seg_last_rt = r->color[0] ? r->color[0]->serial : 0;
-                if (r->depth) {
-                    uint64_t dser = r->depth->serial;
-                    if (dser) {
-                        int have = 0;
-                        for (int k = 0; k < g_seg_ndrt; k++) if (g_seg_drt[k] == dser) { have = 1; break; }
-                        if (!have && g_seg_ndrt < 64) g_seg_drt[g_seg_ndrt++] = dser;
-                    }
-                    g_seg_last_drt = dser;
-                }
-                R.rt = *r; R.has_rt = 1; break;
+                sub_cut(); R.rt = *r; R.has_rt = 1; break;
             }
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = a;
