@@ -136,6 +136,7 @@ static int g_res_dirty;
 static id<MTLSharedEvent> g_ev;
 static _Atomic uint64_t g_fence;                // Highest committed fence value (incremented exclusively by the submit thread)
 static int g_cut_copy;                          // a buffer → texture copy was encoded since the last commit: the next pass boundary commits the segment (sub_cut)
+static int g_cut_pingpong;                      // a render target was reused within the current command buffer: commit segment (sub_cut)
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static _Atomic uint64_t g_done;                 // GPU complete and all CPU-visible effects through this fence published
@@ -14020,7 +14021,6 @@ static int cut_draws(void) {
     return v;
 }
 static uint64_t g_cut_draw0, g_cuts, g_copy_cuts, g_pingpong_cuts;
-static int g_cut_pingpong;
 static uint64_t g_seg_rt[64], g_seg_last_rt;
 static int g_seg_nrt;
 static uint64_t g_seg_drt[64], g_seg_last_drt;
