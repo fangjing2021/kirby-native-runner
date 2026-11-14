@@ -384,11 +384,6 @@ static id<MTLCommandQueue> s_compat_queue;
     }
     return self;
 }
-- (void)dealloc {
-    [_fences[0] release];
-    [_fences[1] release];
-    [super dealloc];
-}
 @end
 
 static char kFenceKey;
@@ -405,7 +400,7 @@ static char kFenceKey;
     if (!tracker && [cb respondsToSelector:@selector(device)]) {
         id dev = [cb device];
         if (dev) {
-            tracker = [[[DmCbFenceTracker alloc] initWithDevice:dev] autorelease];
+            tracker = [[DmCbFenceTracker alloc] initWithDevice:dev];
             if (tracker) {
                 objc_setAssociatedObject(cb, &kFenceKey, tracker, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
@@ -434,6 +429,8 @@ static char kFenceKey;
     (void)vis;
     if ([self respondsToSelector:@selector(memoryBarrierWithScope:afterStages:beforeStages:)]) {
         [(id<MTLRenderCommandEncoder>)self memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures afterStages:MTLRenderStageFragment beforeStages:MTLRenderStageVertex];
+    } else if ([self respondsToSelector:@selector(memoryBarrierWithScope:)]) {
+        [(id<MTLComputeCommandEncoder>)self memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
     }
 }
 - (void)barrierAfterQueueStages:(NSUInteger)after beforeStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
