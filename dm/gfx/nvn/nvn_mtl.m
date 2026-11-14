@@ -6415,6 +6415,42 @@ static NSUInteger fit_layers(id<MTLTexture> t, MTLTextureType want) {
 }
 static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, uint64_t *rid) {
     MTLTextureType have = t.textureType; NSUInteger ns = fit_layers(t, want);
+    // A one-layer 2D texture in a cube slot has no cube view (Pokémon Legends: Z-A binds one to a cube sampler on its character creation screen, a placeholder for an environment map): the zero cube,
+    // a defined read, instead of a type mismatch whose reads are undefined. The same for a 2D array of fewer than 6 layers, which is how the host holds some 2D textures (Mario Kart 8 Deluxe binds
+    // an NVN 2D texture, format 0x44, at slot 10 of two pixel shaders that declare a cube there, as a race loads)
+    if (!ns && (want == MTLTextureTypeCube || want == MTLTextureTypeCubeArray) && (have == MTLTextureType2D || (have == MTLTextureType2DArray && t.arrayLength < 6))) {
+        // Uniform-controlled branches can leave unused cube inputs holding 2D descriptors (Echoes of Wisdom).
+        // Binding alone cannot establish that a mismatched input is sampled; this supported fallback is informational.
+        static int noted; if (!noted++) MLOG("cube binding fallback: texture ID %d has a 2D descriptor; zero cube bound (the shader may leave this input unused)", tid);
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+    // The same for a 2D texture or 2D array in a 3D slot: Metal makes a 3D view only of a 3D texture. Batman: Arkham Knight's shaders sample a volume through separate texture slots where
+    // the game has left 2D render targets bound (553c51835a24a36a samples separate slot 2 as 3D at world coordinates, the slot holding a 720x406 RGBA16F target), from the first frames of
+    // New Story on; the zero volume instead of a type mismatch whose reads are undefined. What the Switch's texture unit reads there is not known
+    if (!ns && want == MTLTextureType3D && (have == MTLTextureType2D || have == MTLTextureType2DArray)) {
+        static int noted; if (!noted++) MLOG("3D binding fallback: texture ID %d is %s %lux%lu (Metal format %lu); zero 3D texture bound", tid, have == MTLTextureType2D ? "2D" : "a 2D array",
+                                             (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat);
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+    // A 3D texture in a 2D or 2D array slot: Metal makes a 2D view only of a 2D texture or 2D array/cube.
+    // Kirby and the Forgotten Land leaves 3D color-grading LUT textures bound in slots that UI layout shaders declare as 2D:
+    // the zero 2D texture instead of a type mismatch that causes an AGX GPU page fault.
+    if (!ns && (want == MTLTextureType2D || want == MTLTextureType2DArray) && have == MTLTextureType3D) {
+        static int noted; if (!noted++) MLOG("2D binding fallback: texture ID %d is 3D %lux%lux%lu (Metal format %lu); zero 2D texture bound", tid,
+                                             (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth, (unsigned long)t.pixelFormat);
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+    if (!ns && (want == MTLTextureTypeCube || want == MTLTextureTypeCubeArray) && have == MTLTextureType3D) {
+        static int noted; if (!noted++) MLOG("cube binding fallback: texture ID %d is 3D; zero cube bound", tid);
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+    if (!ns && want == MTLTextureType3D && (have == MTLTextureTypeCube || have == MTLTextureTypeCubeArray)) {
+        static int noted; if (!noted++) MLOG("3D binding fallback: texture ID %d is cube; zero 3D bound", tid);
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+#if TARGET_OS_IPHONE
+    // On iOS Apple Silicon AGX GPUs, any unbridgeable texture type mismatch causes a fatal GPU page fault.
+    // Fall back to a zero dummy texture of the expected type to guarantee shader validation and GPU safety.
+    if (!ns) {
+        static int noted; if (!noted++) MLOG("iOS texture binding fallback: texture ID %d type %lu -> %lu; zero texture bound", tid, (unsigned long)have, (unsigned long)want);
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z;
+    }
+#endif
     if (!ns || tid <= 0 || tid >= g_ntreg) return nil;   // no view bridges it: caller falls back to dummy matching expected type and pixel format
     treg_t *r = &g_treg[tid];
     if (r->alt && r->alt_of == (__bridge void *)t && r->alt_type == (uint8_t)want) { *rid = r->alt_rid; return (__bridge id<MTLTexture>)r->alt; }
