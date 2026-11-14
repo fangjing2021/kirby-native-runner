@@ -9133,10 +9133,25 @@ static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
 // Argument buffer: filled item by item per the B reflection (uniform slot r, separate texture / sampler slot r, storage buffer slot r, driver segments c0 / c2, c1, support_buffer)
 // Unbound resources read 0: give all-zero dummy resources (NVN descriptors 0..255 are reserved for the driver; the game binding handle 0 means 'this slot is empty')
 static uint64_t g_dummy_img_rid[8][4], g_dummy_tbuf_rid[4];
+static id<MTLTexture> dummy_tbuf(int dpf);
+static inline bool is_depth_tex_type(MTLTextureType tt) {
+    return tt == MTLTextureType2D || tt == MTLTextureType2DArray ||
+           tt == MTLTextureTypeCube || tt == MTLTextureTypeCubeArray ||
+           tt == MTLTextureType2DMultisample || tt == MTLTextureType2DMultisampleArray;
+}
 static id<MTLTexture> dummy_tex(int dtt, int dpf) {
     static __strong id<MTLTexture> cache[DMY_NT][4];
     MTLTextureType tt = (MTLTextureType)dtt;
-    MTLPixelFormat pf = dpf == NVN_DPF_DEPTH ? MTLPixelFormatDepth32Float : dpf == NVN_DPF_UINT ? MTLPixelFormatRGBA32Uint : dpf == NVN_DPF_SINT ? MTLPixelFormatRGBA32Sint : MTLPixelFormatRGBA8Unorm;
+    if (tt == MTLTextureTypeTextureBuffer) {
+        id<MTLTexture> tb = dummy_tbuf(dpf);
+        cache[dtt % DMY_NT][dpf & 3] = tb;
+        g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] = g_dummy_tbuf_rid[dpf & 3];
+        return tb;
+    }
+    MTLPixelFormat pf = (dpf == NVN_DPF_DEPTH && is_depth_tex_type(tt)) ? MTLPixelFormatDepth32Float :
+                        (dpf == NVN_DPF_DEPTH) ? MTLPixelFormatR32Float :
+                        dpf == NVN_DPF_UINT ? MTLPixelFormatRGBA32Uint :
+                        dpf == NVN_DPF_SINT ? MTLPixelFormatRGBA32Sint : MTLPixelFormatRGBA8Unorm;
     id<MTLTexture> t = cache[dtt % DMY_NT][dpf & 3];
     if (t) return t;
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
@@ -9154,8 +9169,15 @@ static id<MTLTexture> dummy_tex(int dtt, int dpf) {
         return t;
     }
     t = [g_dev newTextureWithDescriptor:d];   // Shared storage is all zeros when newly created
-    if (pf != MTLPixelFormatDepth32Float) { uint8_t z[64] = {0}; NSUInteger faces = tt == MTLTextureTypeCube || tt == MTLTextureTypeCubeArray ? 6 : 1;
-        for (NSUInteger f = 0; f < faces; f++) [t replaceRegion:MTLRegionMake3D(0, 0, 0, 1, 1, 1) mipmapLevel:0 slice:f withBytes:z bytesPerRow:16 bytesPerImage:16]; }
+    if (pf != MTLPixelFormatDepth32Float) {
+        uint8_t z[64] = {0};
+        NSUInteger faces = (tt == MTLTextureTypeCube || tt == MTLTextureTypeCubeArray) ? 6 : 1;
+        NSUInteger row = (tt == MTLTextureType1D || tt == MTLTextureType1DArray) ? 0 : 16;
+        NSUInteger img = (tt == MTLTextureType3D) ? 16 : 0;
+        for (NSUInteger f = 0; f < faces; f++) {
+            [t replaceRegion:MTLRegionMake3D(0, 0, 0, 1, 1, 1) mipmapLevel:0 slice:f withBytes:z bytesPerRow:row bytesPerImage:img];
+        }
+    }
     cache[dtt % DMY_NT][dpf & 3] = t; g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] = t.gpuResourceID._impl; res_add(t);
     return t;
 }
@@ -9163,10 +9185,20 @@ static id<MTLTexture> dummy_tex(int dtt, int dpf) {
 static id<MTLTexture> dummy_img(int dtt, int dpf) {
     static __strong id<MTLTexture> cache[8][4];
     id<MTLTexture> t = cache[dtt & 7][dpf & 3]; if (t) return t;
-    MTLTextureDescriptor *d = [MTLTextureDescriptor new];
-    d.textureType = (MTLTextureType)dtt; d.pixelFormat = dpf == NVN_DPF_UINT ? MTLPixelFormatRGBA32Uint : dpf == NVN_DPF_SINT ? MTLPixelFormatRGBA32Sint : MTLPixelFormatRGBA16Float;
-    d.width = d.height = d.depth = 1; d.storageMode = MTLStorageModePrivate; d.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-    t = [g_dev newTextureWithDescriptor:d]; cache[dtt & 7][dpf & 3] = t; g_dummy_img_rid[dtt & 7][dpf & 3] = t.gpuResourceID._impl; res_add(t); return t;
+    MTLTextureType tt = (MTLTextureType)dtt;
+    if (tt == MTLTextureType2DMultisample || tt == MTLTextureType2DMultisampleArray) tt = MTLTextureType2D;
+    MTLPixelFormat pf = dpf == NVN_DPF_UINT ? MTLPixelFormatRGBA32Uint : dpf == NVN_DPF_SINT ? MTLPixelFormatRGBA32Sint : MTLPixelFormatRGBA16Float;
+    if (tt == MTLTextureTypeTextureBuffer) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:pf width:16 resourceOptions:MTLResourceStorageModePrivate usage:MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite];
+        id<MTLBuffer> b = [g_dev newBufferWithLength:256 options:MTLResourceStorageModePrivate]; res_add(b);
+        t = [b newTextureWithDescriptor:d offset:0 bytesPerRow:256];
+    } else {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor new];
+        d.textureType = tt; d.pixelFormat = pf;
+        d.width = d.height = d.depth = 1; d.storageMode = MTLStorageModePrivate; d.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        t = [g_dev newTextureWithDescriptor:d];
+    }
+    cache[dtt & 7][dpf & 3] = t; g_dummy_img_rid[dtt & 7][dpf & 3] = t.gpuResourceID._impl; res_add(t); return t;
 }
 static id<MTLBuffer> dummy_buf(void);
 static id<MTLTexture> dummy_tbuf(int dpf) {   // Unbound typed buffer: all zeros (pixel class matches the shader's texture_buffer<T>)
@@ -10296,6 +10328,7 @@ static void dummy_prewarm(void) {
             }
         }
         for (int t = 0; t < 8; t++) {
+            if (t == (int)MTLTextureType2DMultisample || t == (int)MTLTextureType2DMultisampleArray) continue;
             for (int p = 0; p < 4; p++) {
                 dummy_img(t, p);
             }
