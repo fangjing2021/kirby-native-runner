@@ -171,7 +171,7 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 
 @implementation DmCompatArgumentTable {
     uint64_t _addresses[32];
-    id<MTLBuffer> _buffers[32];
+    __unsafe_unretained id<MTLBuffer> _buffers[32];
     NSUInteger _offsets[32];
     uint32_t _valid_mask;
     uint32_t _dirty_mask;
@@ -266,7 +266,7 @@ static char kCompatCtKey;
     id enc = _encoder;
     if (!enc) return;
     if (!(_valid_mask & (1u << index))) return;
-    id<MTLBuffer> buf = _buffers[index] ? _buffers[index] : mtl_dummy_buf();
+    __unsafe_unretained id<MTLBuffer> buf = _buffers[index] ? _buffers[index] : mtl_dummy_buf();
     NSUInteger off = _offsets[index];
     if (!buf) buf = mtl_dummy_buf();
     if (buf) {
@@ -338,10 +338,10 @@ static char kCompatCtKey;
     _dirty_mask = 0;
     _texture_dirty_mask = 0;
     _sampler_dirty_mask = 0;
-    id<MTLBuffer> d = mtl_dummy_buf();
+    __unsafe_unretained id<MTLBuffer> d = mtl_dummy_buf();
     for (NSUInteger i = 0; i < 32; i++) {
         if (_valid_mask & (1u << i)) {
-            id<MTLBuffer> buf = _buffers[i] ? _buffers[i] : d;
+            __unsafe_unretained id<MTLBuffer> buf = _buffers[i] ? _buffers[i] : d;
             NSUInteger off = _offsets[i];
             if (!buf) buf = d;
             if (buf) {
@@ -407,11 +407,11 @@ static char kCompatCtKey;
     if (_dirty_mask) {
         uint32_t mask = _dirty_mask;
         _dirty_mask = 0;
-        id<MTLBuffer> d = mtl_dummy_buf();
+        __unsafe_unretained id<MTLBuffer> d = mtl_dummy_buf();
         for (NSUInteger i = 0; i < 32; i++) {
             if (mask & (1u << i)) {
                 if (_valid_mask & (1u << i)) {
-                    id<MTLBuffer> buf = _buffers[i] ? _buffers[i] : d;
+                    __unsafe_unretained id<MTLBuffer> buf = _buffers[i] ? _buffers[i] : d;
                     NSUInteger off = _offsets[i];
                     if (!buf) buf = d;
                     if (buf) {
@@ -494,19 +494,19 @@ static char kCompatCtKey;
         void *b = NULL;
         uint64_t off = 0;
         if ((mtl_gpu_to_buf(address, 1, &b, &off) || mtl_addr(address, 1, &b, &off)) && b) {
-            id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)b;
+            __unsafe_unretained id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)b;
             if (off < mbuf.length) {
                 _buffers[index] = mbuf;
                 _offsets[index] = (NSUInteger)(off & ~3u);
                 _valid_mask |= (1u << index);
             } else {
-                id<MTLBuffer> d = mtl_dummy_buf();
+                __unsafe_unretained id<MTLBuffer> d = mtl_dummy_buf();
                 _buffers[index] = d;
                 _offsets[index] = 0;
                 _valid_mask |= (1u << index);
             }
         } else {
-            id<MTLBuffer> d = mtl_dummy_buf();
+            __unsafe_unretained id<MTLBuffer> d = mtl_dummy_buf();
             _buffers[index] = d;
             _offsets[index] = 0;
             _valid_mask |= (1u << index);
