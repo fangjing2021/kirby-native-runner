@@ -6694,58 +6694,162 @@ static NvArena *arena_new(size_t minimum) {
 // them again and took 300 ms. The usual 4 MB blocks are always kept
 enum { ARENA_KEEP = 32 << 20, ARENA_IDLE = 600 };
 void arena_begin(void) {
+    pthread_mutex_lock(&g_mu);
     if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; }
     g_cur_arena = nil;
     uint64_t done = g_done;   // read as the submission start does (its allocator and visibility ring)
     for (NSUInteger i = g_arenas.count; i-- > 0;) { NvArena *a = g_arenas[i];
         if (a->fence && a->fence <= done && a->len > ARENA_KEEP && g_fence > a->fence + ARENA_IDLE) { res_remove(a->buf); [g_arenas removeObjectAtIndex:i]; } }
+    pthread_mutex_unlock(&g_mu);
 }
-void arena_commit(uint64_t fence) { for (NvArena *a in g_sub_arenas) { a->fence = fence; [g_arenas addObject:a]; } [g_sub_arenas removeAllObjects]; g_cur_arena = nil; }
+void arena_commit(uint64_t fence) {
+    pthread_mutex_lock(&g_mu);
+    for (NvArena *a in g_sub_arenas) { a->fence = fence; [g_arenas addObject:a]; }
+    [g_sub_arenas removeAllObjects];
+    g_cur_arena = nil;
+    pthread_mutex_unlock(&g_mu);
+}
 static id<MTLBuffer> dummy_buf(void);
 static id<MTLBuffer> support_buf(void);
-static int mtl_addr_extra_fallback(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
+static id<MTLBuffer> zero_bank(void);
+static id<MTLBuffer> g_quad_ib; static uint64_t g_quad_gpu;
+static id<MTLBuffer> g_fan_ib; static uint64_t g_fan_gpu;
+
+typedef struct {
+    uint64_t gpu_base;
+    uint64_t length;
+    void *buf;
+} gpu_cache_entry;
+#define GPU_CACHE_CAP 16
+static __thread gpu_cache_entry t_gpu_cache[GPU_CACHE_CAP];
+static __thread unsigned t_gpu_cache_head = 0;
+
+static inline void gpu_cache_insert(uint64_t base, uint64_t len, void *b) {
+    if (!b || !len) return;
+    t_gpu_cache[t_gpu_cache_head].gpu_base = base;
+    t_gpu_cache[t_gpu_cache_head].length = len;
+    t_gpu_cache[t_gpu_cache_head].buf = b;
+    t_gpu_cache_head = (t_gpu_cache_head + 1) % GPU_CACHE_CAP;
+}
+
+int mtl_gpu_to_buf(uint64_t gpu_addr, uint64_t len, void **buf, uint64_t *off) {
+    if (!gpu_addr) return 0;
     uint64_t check_len = len > 0 ? len : 1;
+
+    // 1. Thread-local cache
+    for (int i = 0; i < GPU_CACHE_CAP; i++) {
+        if (t_gpu_cache[i].buf &&
+            gpu_addr >= t_gpu_cache[i].gpu_base &&
+            gpu_addr + check_len <= t_gpu_cache[i].gpu_base + t_gpu_cache[i].length) {
+            *buf = t_gpu_cache[i].buf;
+            *off = gpu_addr - t_gpu_cache[i].gpu_base;
+            return 1;
+        }
+    }
+
+    // 2. Static buffers
     id<MTLBuffer> db = dummy_buf();
-    if (db && db.gpuAddress && addr >= db.gpuAddress && addr + check_len <= db.gpuAddress + db.length) {
+    if (db && db.gpuAddress && gpu_addr >= db.gpuAddress && gpu_addr + check_len <= db.gpuAddress + db.length) {
         *buf = (__bridge void *)db;
-        *off = addr - db.gpuAddress;
+        *off = gpu_addr - db.gpuAddress;
+        gpu_cache_insert(db.gpuAddress, db.length, *buf);
         return 1;
     }
     id<MTLBuffer> sb = support_buf();
-    if (sb && sb.gpuAddress && addr >= sb.gpuAddress && addr + check_len <= sb.gpuAddress + sb.length) {
+    if (sb && sb.gpuAddress && gpu_addr >= sb.gpuAddress && gpu_addr + check_len <= sb.gpuAddress + sb.length) {
         *buf = (__bridge void *)sb;
-        *off = addr - sb.gpuAddress;
+        *off = gpu_addr - sb.gpuAddress;
+        gpu_cache_insert(sb.gpuAddress, sb.length, *buf);
         return 1;
     }
+    id<MTLBuffer> zb = zero_bank();
+    if (zb && zb.gpuAddress && gpu_addr >= zb.gpuAddress && gpu_addr + check_len <= zb.gpuAddress + zb.length) {
+        *buf = (__bridge void *)zb;
+        *off = gpu_addr - zb.gpuAddress;
+        gpu_cache_insert(zb.gpuAddress, zb.length, *buf);
+        return 1;
+    }
+    if (g_quad_ib && g_quad_gpu && gpu_addr >= g_quad_gpu && gpu_addr + check_len <= g_quad_gpu + g_quad_ib.length) {
+        *buf = (__bridge void *)g_quad_ib;
+        *off = gpu_addr - g_quad_gpu;
+        gpu_cache_insert(g_quad_gpu, g_quad_ib.length, *buf);
+        return 1;
+    }
+    if (g_fan_ib && g_fan_gpu && gpu_addr >= g_fan_gpu && gpu_addr + check_len <= g_fan_gpu + g_fan_ib.length) {
+        *buf = (__bridge void *)g_fan_ib;
+        *off = gpu_addr - g_fan_gpu;
+        gpu_cache_insert(g_fan_gpu, g_fan_ib.length, *buf);
+        return 1;
+    }
+
+    // 3. Arenas (under g_mu)
     pthread_mutex_lock(&g_mu);
-    if (g_cur_arena && g_cur_arena->gpu && addr >= g_cur_arena->gpu && addr + check_len <= g_cur_arena->gpu + g_cur_arena->len) {
+    if (g_cur_arena && g_cur_arena->gpu && gpu_addr >= g_cur_arena->gpu && gpu_addr + check_len <= g_cur_arena->gpu + g_cur_arena->len) {
         *buf = (__bridge void *)g_cur_arena->buf;
-        *off = addr - g_cur_arena->gpu;
+        *off = gpu_addr - g_cur_arena->gpu;
+        uint64_t g = g_cur_arena->gpu, l = g_cur_arena->len;
         pthread_mutex_unlock(&g_mu);
+        gpu_cache_insert(g, l, *buf);
         return 1;
     }
     if (g_sub_arenas) {
         for (NvArena *a in g_sub_arenas) {
-            if (a->gpu && addr >= a->gpu && addr + check_len <= a->gpu + a->len) {
+            if (a->gpu && gpu_addr >= a->gpu && gpu_addr + check_len <= a->gpu + a->len) {
                 *buf = (__bridge void *)a->buf;
-                *off = addr - a->gpu;
+                *off = gpu_addr - a->gpu;
+                uint64_t g = a->gpu, l = a->len;
                 pthread_mutex_unlock(&g_mu);
+                gpu_cache_insert(g, l, *buf);
                 return 1;
             }
         }
     }
     if (g_arenas) {
         for (NvArena *a in g_arenas) {
-            if (a->gpu && addr >= a->gpu && addr + check_len <= a->gpu + a->len) {
+            if (a->gpu && gpu_addr >= a->gpu && gpu_addr + check_len <= a->gpu + a->len) {
                 *buf = (__bridge void *)a->buf;
-                *off = addr - a->gpu;
+                *off = gpu_addr - a->gpu;
+                uint64_t g = a->gpu, l = a->len;
                 pthread_mutex_unlock(&g_mu);
+                gpu_cache_insert(g, l, *buf);
+                return 1;
+            }
+        }
+    }
+
+    // 4. Memory pools g_pools (under g_mu)
+    for (int p = 0; p < g_npool; p++) {
+        if (g_pools[p].buf && g_pools[p].gpu) {
+            uint64_t blen = g_pools[p].buf.length;
+            if (gpu_addr >= g_pools[p].gpu && gpu_addr + check_len <= g_pools[p].gpu + blen) {
+                *buf = (__bridge void *)g_pools[p].buf;
+                *off = gpu_addr - g_pools[p].gpu;
+                uint64_t g = g_pools[p].gpu;
+                pthread_mutex_unlock(&g_mu);
+                gpu_cache_insert(g, blen, *buf);
+                return 1;
+            }
+        }
+    }
+
+    // 5. Large pools g_big (under g_mu)
+    for (int b = 0; b < g_nbig; b++) {
+        for (id<MTLBuffer> old_b in g_big[b].old) {
+            if (old_b && old_b.gpuAddress &&
+                gpu_addr >= old_b.gpuAddress &&
+                gpu_addr + check_len <= old_b.gpuAddress + old_b.length) {
+                *buf = (__bridge void *)old_b;
+                *off = gpu_addr - old_b.gpuAddress;
+                uint64_t g = old_b.gpuAddress, l = old_b.length;
+                pthread_mutex_unlock(&g_mu);
+                gpu_cache_insert(g, l, *buf);
                 return 1;
             }
         }
     }
     pthread_mutex_unlock(&g_mu);
 
+    // 6. Resident objects
     pthread_mutex_lock(&g_res_mu);
     if (g_res_objects) {
         for (id obj in g_res_objects) {
@@ -6754,10 +6858,11 @@ static int mtl_addr_extra_fallback(uint64_t addr, uint64_t len, void **buf, uint
                 if ([mb respondsToSelector:@selector(gpuAddress)]) {
                     uint64_t bgpu = mb.gpuAddress;
                     NSUInteger blen = mb.length;
-                    if (bgpu && addr >= bgpu && addr + check_len <= bgpu + blen) {
+                    if (bgpu && gpu_addr >= bgpu && gpu_addr + check_len <= bgpu + blen) {
                         *buf = (__bridge void *)mb;
-                        *off = addr - bgpu;
+                        *off = gpu_addr - bgpu;
                         pthread_mutex_unlock(&g_res_mu);
+                        gpu_cache_insert(bgpu, blen, *buf);
                         return 1;
                     }
                 }
@@ -6767,15 +6872,23 @@ static int mtl_addr_extra_fallback(uint64_t addr, uint64_t len, void **buf, uint
     pthread_mutex_unlock(&g_res_mu);
     return 0;
 }
+
+static int mtl_addr_extra_fallback(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
+    return mtl_gpu_to_buf(addr, len, buf, off);
+}
+
 // An unqualified id * out-parameter is __autoreleasing under ARC; __strong avoids autoreleasing the arena buffer at every allocation.
 // Measurements: docs/reference/frame-rate.md, Arena buffer ownership on allocation.
 static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf) {
     n = (n + 255) & ~(size_t)255;
+    pthread_mutex_lock(&g_mu);
     if (!g_cur_arena || g_cur_arena->used + n > g_cur_arena->len) {
-        pthread_mutex_lock(&g_mu); g_cur_arena = arena_new(n); pthread_mutex_unlock(&g_mu);
+        g_cur_arena = arena_new(n);
         [g_sub_arenas addObject:g_cur_arena];
     }
-    size_t off = g_cur_arena->used; g_cur_arena->used += n; *buf = g_cur_arena->buf; return off;
+    size_t off = g_cur_arena->used; g_cur_arena->used += n; *buf = g_cur_arena->buf;
+    pthread_mutex_unlock(&g_mu);
+    return off;
 }
 
 // ---------- Draw state ----------
@@ -10511,8 +10624,6 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     g_stat_args_enc++;
     return 1;
 }
-static id<MTLBuffer> g_quad_ib; static uint64_t g_quad_gpu;
-static id<MTLBuffer> g_fan_ib; static uint64_t g_fan_gpu;   // non-indexed triangle fans: shared indices (0, i, i+1), base vertex = first
 #define SHARED_IB_N 65536   // quads / fan triangles the shared index buffers cover
 static void quad_ib_make(void) {   // Quads: shared indices 0,1,2,0,2,3
     if (g_quad_ib) return;
