@@ -164,7 +164,8 @@ void dm_thread_service_connect(void) {
         for (thr_t *t = g_all; t; t = t->all) if (t->started && !t->entered && !t->exited && !t->host_owned) waiting = 1;
         pthread_mutex_unlock(&G);
         if (!waiting || now_ns() >= end) break;
-        usleep(50);
+        sched_yield();
+        usleep(250);
     }
     usleep(200);
 }
@@ -183,7 +184,8 @@ void dm_thread_service_request(void) {
     while (me->start_by && now_ns() - t0 < SERVICE_START_WAIT_NS) {
         if (atomic_load(&me->start_by->hand_epoch) != epoch) { back = 1; break; }
         pthread_mutex_unlock(&G);
-        { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); }
+        sched_yield();
+        { struct timespec ts = {0, 250000}; nanosleep(&ts, 0); }
         pthread_mutex_lock(&G);
     }
     me->start_by = NULL; me->native_wait--;
@@ -216,6 +218,7 @@ int dm_yield_to_core_peers(int all) {
     thr_t *self = pthread_getspecific(g_keythr); if (!self) return 0;
     uint64_t bit = 1ull << (self->core & 63); int waited = 0;
     if (self->mask & ~bit) return 0;
+    int spins = 0;
     for (;;) {
         int busy = 0;
         pthread_mutex_lock(&G);
@@ -223,8 +226,18 @@ int dm_yield_to_core_peers(int all) {
             if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_runnable(t) && (all || thr_in_handoff(t, self))) busy = 1;
         pthread_mutex_unlock(&G);
         if (!busy) return waited;
-        { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); } waited = 1;
+        waited = 1;
+        if (++spins <= 4) {
+            sched_yield();
+        } else if (spins <= 16) {
+            struct timespec ts = {0, 250000}; nanosleep(&ts, 0);
+        } else if (spins <= 64) {
+            struct timespec ts = {0, 1000000}; nanosleep(&ts, 0);
+        } else {
+            break;
+        }
     }
+    return waited;
 }
 // Take a host lock that an HLE call holds while it runs guest code. A guest thread waiting for it is in a native HLE wait (dm_thread_native_wait), blocked as it would be
 // on the guest-visible lock the SDK's own code uses there, so it does not hold a same-core handoff: Kirby and the Forgotten Land's guide movies froze the game when the movie decoder's decode lock was held across the

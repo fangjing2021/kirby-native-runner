@@ -264,7 +264,30 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 - (void)sceneDidBecomeActive:(UIScene *)s { front_ios_focus_event(3); }
 @end
 
+#include <sys/resource.h>
+
+#ifndef RLIMIT_WAKEUPS_MONITOR
+#define RLIMIT_WAKEUPS_MONITOR 0x1
+#endif
+#ifndef WAKEMON_DISABLE
+#define WAKEMON_DISABLE 0x02
+#endif
+
+struct dm_proc_rlimit_control_wakeupmon {
+    uint32_t wm_flags;
+    int32_t wm_rate;
+};
+
+int proc_rlimit_control(pid_t pid, int flavor, void *arg);
+
+static void disable_ios_wakemon(void) {
+    struct dm_proc_rlimit_control_wakeupmon wmon = { WAKEMON_DISABLE, -1 };
+    int ret = proc_rlimit_control(getpid(), RLIMIT_WAKEUPS_MONITOR, &wmon);
+    fprintf(stderr, "[dm] proc_rlimit_control WAKEMON_DISABLE returned %d (errno=%d)\n", ret, errno);
+}
+
 int main(int argc, char **argv) {
+    disable_ios_wakemon();
     @autoreleasepool { g_boot_ok = boot_env(); }
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(App.class)); }
 }
