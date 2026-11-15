@@ -2,6 +2,7 @@
 # G-buffer attachment 5 is MTLPixelFormatR8Uint; declare uint outputs so shaders compile on Metal 3
 00437b4d5f7642bb	{"fout":{"5":"uint"}}
 0046253ca1eb0c60	{"fout":{"5":"uint"}}
+005343020ba3db78	{"fout":{"5":"uint"}}
 00cc06a3b5079294	{"fout":{"5":"uint"}}
 0232b097d9319d1b	{"fout":{"5":"uint"}}
 023d001343e14444	{"fout":{"5":"uint"}}
@@ -45,6 +46,7 @@
 0f789ed194edb64c	{"fout":{"5":"uint"}}
 1015180694f211e7	{"fout":{"5":"uint"}}
 1019462c3b214499	{"fout":{"5":"uint"}}
+1055011e7c3b0a5b	{"fout":{"5":"uint"}}
 1071da7f0443ca28	{"fout":{"5":"uint"}}
 10f991f6d729e958	{"fout":{"5":"uint"}}
 117df7461c79d431	{"fout":{"5":"uint"}}
@@ -117,6 +119,7 @@
 2cb4d821d17a9e7b	{"fout":{"5":"uint"}}
 2d4a3603c7f15723	{"fout":{"5":"uint"}}
 2e2a5d5f9308aa01	{"fout":{"5":"uint"}}
+2e4f1584654166e5	{"fout":{"5":"uint"}}
 2ed6bdeff163e8ed	{"fout":{"5":"uint"}}
 2f2158cad7cfb307	{"fout":{"5":"uint"}}
 2f25facb50821cf5	{"fout":{"5":"uint"}}
@@ -144,6 +147,7 @@
 34f2f21c1ab887eb	{"fout":{"5":"uint"}}
 3529f739866486e9	{"fout":{"5":"uint"}}
 3653b384c923f97c	{"fout":{"5":"uint"}}
+3654d66e67a080da	{"fout":{"5":"uint"}}
 3676acbc36a9ffcc	{"fout":{"5":"uint"}}
 368f9f31782d20c2	{"fout":{"5":"uint"}}
 369d28ed8684ad29	{"fout":{"5":"uint"}}
@@ -249,6 +253,7 @@
 56af7219d9f422bb	{"fout":{"5":"uint"}}
 56c416487e89d274	{"fout":{"5":"uint"}}
 571a1a86fb816310	{"fout":{"5":"uint"}}
+5805a01dda706ab2	{"fout":{"5":"uint"}}
 582f4521e3511d97	{"fout":{"5":"uint"}}
 58b29ccc80d89582	{"fout":{"5":"uint"}}
 58f1b4147b371bf7	{"fout":{"5":"uint"}}
@@ -257,6 +262,7 @@
 5930fb2777ffbff9	{"fout":{"5":"uint"}}
 594465fcd3ffa709	{"fout":{"5":"uint"}}
 5a1555868afd64f5	{"fout":{"5":"uint"}}
+5a3a40eb3d4842be	{"fout":{"5":"uint"}}
 5a97f261adde8639	{"fout":{"5":"uint"}}
 5ae336bea69f350f	{"fout":{"5":"uint"}}
 5af87aa8e8f78819	{"fout":{"5":"uint"}}
@@ -269,6 +275,8 @@
 5cd3ac75f59c6d91	{"fout":{"5":"uint"}}
 5ce3c558c320386b	{"fout":{"5":"uint"}}
 5deaeb3fda432d0c	{"fout":{"5":"uint"}}
+5e87e18ddeb638e4	{"fout":{"5":"uint"}}
+5f601af8f96084e8	{"fout":{"5":"uint"}}
 5ff69a9723b6ea24	{"fout":{"5":"uint"}}
 6003a5cb851b4600	{"fout":{"5":"uint"}}
 60bd84e91170f402	{"fout":{"5":"uint"}}
@@ -297,6 +305,7 @@
 698c77a8265ec911	{"fout":{"5":"uint"}}
 69c325c84049f3ff	{"fout":{"5":"uint"}}
 6a8aaaac85566fdc	{"fout":{"5":"uint"}}
+6af69bf63131db2e	{"fout":{"5":"uint"}}
 6ba281c48e359904	{"fout":{"5":"uint"}}
 6bf1e8fac25611af	{"fout":{"5":"uint"}}
 6c6dffb99542d926	{"fout":{"5":"uint"}}
@@ -307,6 +316,7 @@
 6d975e7b25184350	{"fout":{"5":"uint"}}
 6dcaf4467f89cd5b	{"fout":{"5":"uint"}}
 6dde5ea69bfef4af	{"fout":{"5":"uint"}}
+6e5bfad030fe0c68	{"fout":{"5":"uint"}}
 6eeb767283a442f5	{"fout":{"5":"uint"}}
 6f069a772fa2b907	{"fout":{"5":"uint"}}
 6f4e75cf96afa4bd	{"fout":{"5":"uint"}}
@@ -323,6 +333,7 @@
 732464d6662075f0	{"fout":{"5":"uint"}}
 73df1315e47de8a3	{"fout":{"5":"uint"}}
 73e6d0a411be0502	{"fout":{"5":"uint"}}
+74afc0aa2d4eeec7	{"fout":{"5":"uint"}}
 75fa900d118196ac	{"fout":{"5":"uint"}}
 7636991d9f22ffc1	{"fout":{"5":"uint"}}
 766c7effab4cec72	{"fout":{"5":"uint"}}
@@ -422,6 +433,7 @@
 97991be89672135f	{"fout":{"5":"uint"}}
 981e3fde7ea3971b	{"fout":{"5":"uint"}}
 982576a5af3d1035	{"fout":{"5":"uint"}}
+98c1e8edd5169a42	{"fout":{"5":"uint"}}
 99207ef176b398eb	{"fout":{"5":"uint"}}
 99a5be764e983cb9	{"fout":{"5":"uint"}}
 99bb1c521ff85a5d	{"fout":{"5":"uint"}}
@@ -509,6 +521,7 @@ b9550ea43ab35637	{"fout":{"5":"uint"}}
 b95a501a49998583	{"fout":{"5":"uint"}}
 b98a6ca954051817	{"fout":{"5":"uint"}}
 ba92783c657bf93c	{"fout":{"5":"uint"}}
+badb4afa7804839e	{"fout":{"5":"uint"}}
 baf883a5ec6276de	{"fout":{"5":"uint"}}
 bc12247ca990eee7	{"fout":{"5":"uint"}}
 bc1783e679bef34d	{"fout":{"5":"uint"}}
@@ -518,6 +531,7 @@ bd150502b7a28794	{"fout":{"5":"uint"}}
 bdb5266c52db67b0	{"fout":{"5":"uint"}}
 be02bfc82e9d9ca1	{"fout":{"5":"uint"}}
 be80846fcca74f60	{"fout":{"5":"uint"}}
+be8827376a06e8b0	{"fout":{"5":"uint"}}
 be9bc26dc1731389	{"fout":{"5":"uint"}}
 bef6452423ae0fee	{"fout":{"5":"uint"}}
 bf6b15c7ce40630a	{"fout":{"5":"uint"}}
@@ -536,6 +550,7 @@ c2f8c3757b4b7dcf	{"fout":{"5":"uint"}}
 c3409a3ced055f4b	{"fout":{"5":"uint"}}
 c368ea0753ebf573	{"fout":{"5":"uint"}}
 c40a1a2a05fa4e28	{"fout":{"5":"uint"}}
+c43cb0c12864f214	{"fout":{"5":"uint"}}
 c48139bfb5a942b6	{"fout":{"5":"uint"}}
 c4ba18adfc81d039	{"fout":{"5":"uint"}}
 c4be4bf4aba33caf	{"fout":{"5":"uint"}}
@@ -557,6 +572,7 @@ ca06fdf8c65c1016	{"fout":{"5":"uint"}}
 ca1a3f01196af55b	{"fout":{"5":"uint"}}
 ca25e8d8febac48b	{"fout":{"5":"uint"}}
 ca33ebbba53f5149	{"fout":{"5":"uint"}}
+ca7f7e4265f7a85f	{"fout":{"5":"uint"}}
 cb6cd113e27e4efc	{"fout":{"5":"uint"}}
 cb72a3492f3926c4	{"fout":{"5":"uint"}}
 cbbf26ae6b7ac3fe	{"fout":{"5":"uint"}}
@@ -592,6 +608,7 @@ d460517ce9c214b2	{"fout":{"5":"uint"}}
 d4b577a8e6f4ff53	{"fout":{"5":"uint"}}
 d51bd8618d6156ee	{"fout":{"5":"uint"}}
 d51f4f1268c8647e	{"fout":{"5":"uint"}}
+d56a05e06b4ff01d	{"fout":{"5":"uint"}}
 d5820ad46706acd5	{"fout":{"5":"uint"}}
 d5a2c089dcf11cf9	{"fout":{"5":"uint"}}
 d5fafc7bb78e5883	{"fout":{"5":"uint"}}
@@ -617,6 +634,7 @@ dc31d5d549c4f425	{"fout":{"5":"uint"}}
 dc3b8c8b7a95f040	{"fout":{"5":"uint"}}
 dc9b23457fabea56	{"fout":{"5":"uint"}}
 dce0736f7c9f91e9	{"fout":{"5":"uint"}}
+dd29616c3edeff62	{"fout":{"5":"uint"}}
 dd7c6132d894f57d	{"fout":{"5":"uint"}}
 ddefa2fe8b15f42d	{"fout":{"5":"uint"}}
 de602575175ef846	{"fout":{"5":"uint"}}
