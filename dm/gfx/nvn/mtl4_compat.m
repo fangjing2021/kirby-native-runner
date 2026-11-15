@@ -190,12 +190,12 @@ static char kCompatCtKey;
 }
 
 - (void)applyToIndex:(NSUInteger)index {
-    if (index >= 32 || !(_valid_mask & (1u << index))) return;
+    if (index >= 32) return;
     id enc = _encoder;
     if (!enc) return;
-    id<MTLBuffer> buf = _buffers[index];
-    NSUInteger off = _offsets[index];
-    if (!buf) return;
+    id<MTLBuffer> buf = (_valid_mask & (1u << index)) && _buffers[index] ? _buffers[index] : mtl_dummy_buf();
+    NSUInteger off = (_valid_mask & (1u << index)) && _buffers[index] ? _offsets[index] : 0;
+    if (!buf) buf = mtl_dummy_buf();
     if (_is_compute) {
         if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
             [(id<MTLComputeCommandEncoder>)enc setBuffer:buf offset:off atIndex:index];
@@ -212,22 +212,22 @@ static char kCompatCtKey;
 
 - (void)applyAllToEncoder:(id)encoder {
     if (!encoder) return;
+    id<MTLBuffer> d = mtl_dummy_buf();
     for (NSUInteger i = 0; i < 32; i++) {
-        if (_valid_mask & (1u << i)) {
-            id<MTLBuffer> buf = _buffers[i];
-            NSUInteger off = _offsets[i];
-            if (buf) {
-                if (_is_compute) {
-                    if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
-                        [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
-                    }
-                } else {
-                    if ((_render_stages & MTLRenderStageVertex) && [encoder respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
-                        [(id<MTLRenderCommandEncoder>)encoder setVertexBuffer:buf offset:off atIndex:i];
-                    }
-                    if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
-                        [(id<MTLRenderCommandEncoder>)encoder setFragmentBuffer:buf offset:off atIndex:i];
-                    }
+        id<MTLBuffer> buf = (_valid_mask & (1u << i)) && _buffers[i] ? _buffers[i] : d;
+        NSUInteger off = (_valid_mask & (1u << i)) && _buffers[i] ? _offsets[i] : 0;
+        if (!buf) buf = d;
+        if (buf) {
+            if (_is_compute) {
+                if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+                    [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
+                }
+            } else {
+                if ((_render_stages & MTLRenderStageVertex) && [encoder respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
+                    [(id<MTLRenderCommandEncoder>)encoder setVertexBuffer:buf offset:off atIndex:i];
+                }
+                if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
+                    [(id<MTLRenderCommandEncoder>)encoder setFragmentBuffer:buf offset:off atIndex:i];
                 }
             }
         }
@@ -245,14 +245,20 @@ static char kCompatCtKey;
             _offsets[index] = (NSUInteger)off;
             _valid_mask |= (1u << index);
         } else {
-            _buffers[index] = nil;
+            id<MTLBuffer> d = mtl_dummy_buf();
+            _buffers[index] = d;
             _offsets[index] = 0;
-            _valid_mask &= ~(1u << index);
+            _valid_mask |= (1u << index);
+            static int n_fail = 0;
+            if (n_fail++ < 30) {
+                NSLog(@"[RED] DmCompatArgumentTable: unresolved GPU addr 0x%llx at index %lu, fallback to dummy_buf", (unsigned long long)address, (unsigned long)index);
+            }
         }
     } else {
-        _buffers[index] = nil;
+        id<MTLBuffer> d = mtl_dummy_buf();
+        _buffers[index] = d;
         _offsets[index] = 0;
-        _valid_mask &= ~(1u << index);
+        _valid_mask |= (1u << index);
     }
     [self applyToIndex:index];
 }

@@ -834,6 +834,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     if (g_npool == g_cap) { g_cap = g_cap ? g_cap * 2 : 64; g_pools = realloc_or_die(g_pools, g_cap * sizeof *g_pools, "the memory pool table"); }
     g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);   // the address index and the per-thread caches are invalid (pool_find, pc_get)
     res_add(buf);
+    res_commit();
     g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, buf.gpuAddress, mem, 1, clock_gettime_nsec_np(CLOCK_MONOTONIC), hi, 1};
     g_pool_res_n++;
     g_pool_adds++;
@@ -888,6 +889,7 @@ static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end, uint6
     if (g_npool == g_cap) { g_cap = g_cap ? g_cap * 2 : 64; g_pools = realloc_or_die(g_pools, g_cap * sizeof *g_pools, "the memory pool table"); }
     g_pidx_ok = 0; atomic_fetch_add(&g_pool_gen, 1);
     res_add(buf);
+    res_commit();
     g_pools[g_npool++] = (pool_ent){lo < b->lo ? b->lo : lo, hi > b->hi ? b->hi : hi, lo, buf, buf.gpuAddress, b->mem, 1, clock_gettime_nsec_np(CLOCK_MONOTONIC), end > b->hi ? b->hi : end, unk};
     g_pool_res_n++;
     [g_keep addObject:buf];
@@ -939,11 +941,25 @@ int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     if (!ok) {
         uint64_t check_len = len > 0 ? len : 1;
         for (int p = 0; p < g_npool; p++) {
-            if (g_pools[p].gpu && addr >= g_pools[p].gpu && addr + check_len <= g_pools[p].gpu + (g_pools[p].hi - g_pools[p].lo)) {
+            uint64_t blen = g_pools[p].buf ? g_pools[p].buf.length : (g_pools[p].hi - g_pools[p].lo);
+            if (g_pools[p].gpu && addr >= g_pools[p].gpu && addr + check_len <= g_pools[p].gpu + blen) {
                 *buf = (__bridge void *)g_pools[p].buf;
                 *off = addr - g_pools[p].gpu;
                 ok = 1;
                 break;
+            }
+        }
+    }
+    if (!ok && g_nbig) {
+        uint64_t check_len = len > 0 ? len : 1;
+        for (int b = 0; b < g_nbig && !ok; b++) {
+            for (id<MTLBuffer> old_b in g_big[b].old) {
+                if (old_b && addr >= old_b.gpuAddress && addr + check_len <= old_b.gpuAddress + old_b.length) {
+                    *buf = (__bridge void *)old_b;
+                    *off = addr - old_b.gpuAddress;
+                    ok = 1;
+                    break;
+                }
             }
         }
     }
@@ -6661,8 +6677,22 @@ void arena_begin(void) {
         if (a->fence && a->fence <= done && a->len > ARENA_KEEP && g_fence > a->fence + ARENA_IDLE) { res_remove(a->buf); [g_arenas removeObjectAtIndex:i]; } }
 }
 void arena_commit(uint64_t fence) { for (NvArena *a in g_sub_arenas) { a->fence = fence; [g_arenas addObject:a]; } [g_sub_arenas removeAllObjects]; g_cur_arena = nil; }
+static id<MTLBuffer> dummy_buf(void);
+static id<MTLBuffer> support_buf(void);
 static int mtl_addr_extra_fallback(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     uint64_t check_len = len > 0 ? len : 1;
+    id<MTLBuffer> db = dummy_buf();
+    if (db && db.gpuAddress && addr >= db.gpuAddress && addr + check_len <= db.gpuAddress + db.length) {
+        *buf = (__bridge void *)db;
+        *off = addr - db.gpuAddress;
+        return 1;
+    }
+    id<MTLBuffer> sb = support_buf();
+    if (sb && sb.gpuAddress && addr >= sb.gpuAddress && addr + check_len <= sb.gpuAddress + sb.length) {
+        *buf = (__bridge void *)sb;
+        *off = addr - sb.gpuAddress;
+        return 1;
+    }
     pthread_mutex_lock(&g_mu);
     if (g_cur_arena && g_cur_arena->gpu && addr >= g_cur_arena->gpu && addr + check_len <= g_cur_arena->gpu + g_cur_arena->len) {
         *buf = (__bridge void *)g_cur_arena->buf;
@@ -9597,7 +9627,24 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
              (unsigned long long)g_stat_pool_nopatch[0], (unsigned long long)g_stat_pool_nopatch[1], (unsigned long long)g_stat_pool_nopatch[4], (unsigned long long)g_stat_pool_nopatch[2], (unsigned long long)g_stat_pool_nopatch[3]);
     *out = b; return p->gpu;
 }
-static id<MTLBuffer> dummy_buf(void) { static id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:16 << 20 options:MTLResourceStorageModeShared]; memset(b.contents, 0, b.length); uint64_t *d = (uint64_t *)((uint8_t *)b.contents + DMSH_POOL_HEAD); d[0] = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT); d[1] = dummy_samp().gpuResourceID._impl; res_add(b); res_commit(); } return b; }
+static id<MTLBuffer> dummy_buf(void) {
+    static id<MTLBuffer> b;
+    if (!b) {
+        b = [g_dev newBufferWithLength:16 << 20 options:MTLResourceStorageModeShared];
+        memset(b.contents, 0, b.length);
+        uint64_t *d = (uint64_t *)((uint8_t *)b.contents + DMSH_POOL_HEAD);
+        uint64_t tr = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
+        uint64_t sr = dummy_samp().gpuResourceID._impl;
+        for (int k = 0; k < 1024; k += 2) {
+            d[k] = tr;
+            d[k + 1] = sr;
+        }
+        res_add(b);
+        res_commit();
+    }
+    return b;
+}
+id<MTLBuffer> mtl_dummy_buf(void) { return dummy_buf(); }
 static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy_buf().gpuAddress; return gpu; }
 // The texture of an image slot (a view of the shader's class and type when the texture's differ, img_fit), else the write sink. Caller holds g_rmu
 static id<MTLTexture> img_binding(int tid, const nvn_rbind *b, uint64_t *rid, int *real) {
@@ -9876,7 +9923,7 @@ static uint64_t gml_take(id<MTLBuffer> map) {
     [g_commit_blocks addObject:^{ gml_read(log->b, log->map, predict, fence); }];
     return b.gpuAddress;
 }
-static id<MTLBuffer> zero_bank(void) { static __strong id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:65536 options:MTLResourceStorageModeShared]; res_add(b); } return b; }
+static id<MTLBuffer> zero_bank(void) { static __strong id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:2 << 20 options:MTLResourceStorageModeShared]; memset(b.contents, 0, b.length); res_add(b); res_commit(); } return b; }
 static uint64_t zero_bank_gpu(void) { static uint64_t gpu; if (!gpu) gpu = zero_bank().gpuAddress; return gpu; }
 // Bindless handle (TEXU / SAMPU): the 32-bit word at byte offset off of uniform slot reg = the low 32 bits of the NVN handle the game wrote there (low 20 bits texture ID, high 12 bits sampler ID).
 // Read on the CPU side at replay time (the memory at the same moment a real GPU would read it at execution); slot unbound / out of range / unreadable = 0 (empty slot: dummy texture / dummy sampler).
@@ -10418,6 +10465,9 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 }
             }
         }
+    }
+    for (size_t s = 0; s < arg_len / 8 && s < NVN_REFL_MAXARG; s++) {
+        if (!slots[s]) slots[s] = dummy_buf_gpu();
     }
 #endif
     id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab);
