@@ -9592,7 +9592,7 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
              (unsigned long long)g_stat_pool_nopatch[0], (unsigned long long)g_stat_pool_nopatch[1], (unsigned long long)g_stat_pool_nopatch[4], (unsigned long long)g_stat_pool_nopatch[2], (unsigned long long)g_stat_pool_nopatch[3]);
     *out = b; return p->gpu;
 }
-static id<MTLBuffer> dummy_buf(void) { static id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:64 << 10 options:MTLResourceStorageModeShared]; res_add(b); } return b; }
+static id<MTLBuffer> dummy_buf(void) { static id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:16 << 20 options:MTLResourceStorageModeShared]; memset(b.contents, 0, b.length); res_add(b); res_commit(); } return b; }
 static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy_buf().gpuAddress; return gpu; }
 // The texture of an image slot (a view of the shader's class and type when the texture's differ, img_fit), else the write sink. Caller holds g_rmu
 static id<MTLTexture> img_binding(int tid, const nvn_rbind *b, uint64_t *rid, int *real) {
@@ -9721,7 +9721,9 @@ static void bind_args(id<MTLCommandEncoder> en, int nvn_stage, int metal_vertex,
 // viewport_inverse f4, viewport_size f4, frag_scale_count i32, render_scale f32[73]..., each field aligned to 16 bytes) and the all-0 driver constant segment (64 KB = the upper bound declared by shaders)
 static id<MTLBuffer> support_buf(void) {
     static __strong id<MTLBuffer> b; if (b) return b;
-    b = [g_dev newBufferWithLength:65536 options:MTLResourceStorageModeShared]; res_add(b);   // All 0 when newly created
+    b = [g_dev newBufferWithLength:65536 options:MTLResourceStorageModeShared];
+    memset(b.contents, 0, b.length);
+    res_add(b); res_commit();
     const int render_scale_off = 192;   // Measured MSL layout: alpha_test 0, is_bgra[8] 16, viewport_inverse 144, viewport_size 160, frag_scale_count 176, render_scale float4[73] 192 (take .x)
     for (int i = 0; i < 73; i++) *(float *)((uint8_t *)b.contents + render_scale_off + 16 * i) = 1.0f;
     return b;
@@ -10429,6 +10431,7 @@ static void dummy_prewarm(void) {
         dummy_buf();
         zero_bank();
         dummy_samp();
+        support_buf();
         quad_ib_make();
         fan_ib_make();
         for (int t = 0; t < DMY_NT; t++) {
