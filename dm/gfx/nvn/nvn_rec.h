@@ -180,9 +180,9 @@ static void rec_exec(const rec_t *r) {
     case RO_R_AMP: { MTLVertexAmplificationViewMapping m = {(uint32_t)a[1], (uint32_t)a[2]}; [(id<MTL4RenderCommandEncoder>)e setVertexAmplificationCount:a[0] viewMappings:a[0] ? &m : NULL]; break; }   // count 0 or 1 (slice-merged passes)
     case RO_R_DRAW: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2]]; break;
     case RO_R_DRAW_INST: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2] instanceCount:a[3] baseInstance:a[4]]; break;
-    case RO_R_DRAW_IND: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] indirectBuffer:a[1]]; break;
-    case RO_R_DRAW_IDX: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexCount:a[1] indexType:a[2] indexBuffer:a[3] indexBufferLength:a[4] instanceCount:a[5] baseVertex:(NSInteger)a[6] baseInstance:a[7]]; break;
-    case RO_R_DRAW_IDX_IND: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexType:a[1] indexBuffer:a[2] indexBufferLength:a[3] indirectBuffer:a[4]]; break;
+    case RO_R_DRAW_IND: if (!a[1]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] indirectBuffer:a[1]]; break;
+    case RO_R_DRAW_IDX: if (!a[3]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexCount:a[1] indexType:a[2] indexBuffer:a[3] indexBufferLength:a[4] instanceCount:a[5] baseVertex:(NSInteger)a[6] baseInstance:a[7]]; break;
+    case RO_R_DRAW_IDX_IND: if (!a[2] || !a[4]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexType:a[1] indexBuffer:a[2] indexBufferLength:a[3] indirectBuffer:a[4]]; break;
     case RO_R_MESH: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroups:MTLSizeMake(a[0], 1, 1) threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;
     case RO_R_MESH_IND: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroupsWithIndirectBuffer:a[0] threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;   // PR #1312's indirect task / mesh draws: the encode thread (iOS) aborted on the selector
     case RO_R_STORE_C: [(id<MTL4RenderCommandEncoder>)e setColorStoreAction:a[0] atIndex:a[1]]; break;
@@ -226,9 +226,9 @@ static void rec_exec(const rec_t *r) {
     case RO_C_FILL:
         e = rec_ensure_blit(g_rx_cb, e); g_rx_enc = e;
         [(id<MTL4ComputeCommandEncoder>)e fillBuffer:rec_id(a[0]) range:NSMakeRange(a[1], a[2]) value:(uint8_t)a[3]]; break;
-    case RO_T_ADDR: [(id<MTL4ArgumentTable>)rec_id(a[0]) setAddress:a[1] atIndex:a[2]]; break;
-    case RO_T_TEX: [(id<MTL4ArgumentTable>)rec_id(a[0]) setTexture:(MTLResourceID){a[1]} atIndex:a[2]]; break;
-    case RO_T_SAMP: [(id<MTL4ArgumentTable>)rec_id(a[0]) setSamplerState:(MTLResourceID){a[1]} atIndex:a[2]]; break;
+    case RO_T_ADDR: [(id<MTL4ArgumentTable>)rec_id(a[0]) setAddress:a[1] ? a[1] : mtl_dummy_buf_gpu() atIndex:a[2]]; break;
+    case RO_T_TEX: [(id<MTL4ArgumentTable>)rec_id(a[0]) setTexture:(MTLResourceID){a[1] ? a[1] : mtl_dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT)} atIndex:a[2]]; break;
+    case RO_T_SAMP: [(id<MTL4ArgumentTable>)rec_id(a[0]) setSamplerState:(MTLResourceID){a[1] ? a[1] : mtl_dummy_samp().gpuResourceID._impl} atIndex:a[2]]; break;
     case RO_LABEL: [(id<MTL4CommandEncoder>)e setLabel:rec_id(a[0])]; break;
     case RO_R_TS: [(id<MTL4RenderCommandEncoder>)e writeTimestampWithGranularity:a[1] afterStage:a[2] intoHeap:rec_id(a[0]) atIndex:a[3]]; break;
     case RO_C_TS: [(id<MTL4ComputeCommandEncoder>)e writeTimestampWithGranularity:a[1] intoHeap:rec_id(a[0]) atIndex:a[2]]; break;

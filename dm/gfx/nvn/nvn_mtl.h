@@ -24,7 +24,11 @@ int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);   // 1 on 
 int mtl_addr_known(uint64_t addr, uint64_t len);   // 1 when the range lies in one memory pool (as mtl_addr finds it); does not make the pool resident
 #if defined(__OBJC__)
 @protocol MTLBuffer;
+@protocol MTLSamplerState;
 id<MTLBuffer> mtl_dummy_buf(void);
+uint64_t mtl_dummy_buf_gpu(void);
+uint64_t mtl_dummy_tex_rid(int dtt, int dpf);
+id<MTLSamplerState> mtl_dummy_samp(void);
 #endif
 
 typedef struct {

@@ -1567,13 +1567,19 @@ static inline void enc_r_blend_color(id<MTL4RenderCommandEncoder> e, float r, fl
 static inline void enc_r_visibility(id<MTL4RenderCommandEncoder> e, MTLVisibilityResultMode m, NSUInteger o) { [e setVisibilityResultMode:m offset:o]; }
 // The table persists across encoders and submissions. Track every write to it, including converted streams,
 // transform feedback and shader arguments; helper passes with their own tables do not change this state.
+static id<MTLBuffer> dummy_buf(void);
+static uint64_t dummy_buf_gpu(void);
 static inline void enc_r_vbuf(id<MTL4RenderCommandEncoder> e, NSUInteger i, uint64_t gpu) {
-    (void)e; uint32_t bit = 1u << i;
+    (void)e;
+    if (i >= 31) return;
+    if (!gpu) gpu = dummy_buf_gpu();
+    uint32_t bit = 1u << i;
     if (g_vbuf_cache && (g_vt_valid & bit) && g_vt_addr[i] == gpu) { g_vbuf_skip++; return; }
     if (rec_on()) rec_table_op(RO_T_ADDR, g_vt, gpu, i); else [g_vt setAddress:gpu atIndex:i];
     g_vt_addr[i] = gpu; g_vt_valid |= bit; g_vbuf_set++;
 }
 static inline void enc_r_args(id<MTL4RenderCommandEncoder> e, MTLRenderStages s, uint64_t gpu, NSUInteger i) {
+    if (!gpu) gpu = dummy_buf_gpu();
     if (s == MTLRenderStageVertex) enc_r_vbuf(e, i, gpu); else if (rec_on()) rec_table_op(RO_T_ADDR, g_ft, gpu, i); else [g_ft setAddress:gpu atIndex:i];
 }
 static inline void enc_r_draw(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n) { [DmCompatArgumentTable ensureArgsForEncoder:e]; g_cm_mdraws++; [e drawPrimitives:p vertexStart:v vertexCount:n]; }
@@ -1586,7 +1592,7 @@ static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor
 static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandBuffer> cb) { return [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]; }
 static inline void enc_c_end(id e) { m4_end(e); }
 static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { [e setComputePipelineState:p]; }
-static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; if (rec_on()) rec_table_op(RO_T_ADDR, g_ct, gpu, i); else [g_ct setAddress:gpu atIndex:i]; }
+static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; if (!gpu) gpu = dummy_buf_gpu(); if (rec_on()) rec_table_op(RO_T_ADDR, g_ct, gpu, i); else [g_ct setAddress:gpu atIndex:i]; }
 static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThreadgroups:n threadsPerThreadgroup:t]; }
 static inline void enc_c_dispatch_indirect(id e, uint64_t ind, MTLSize t) { [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:ind threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) {
@@ -6883,8 +6889,11 @@ static int bind_vbufs(id<MTL4RenderCommandEncoder> en, const nvn_refl *rf) {
     uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
     unsigned used = vs_streams(rf); int bad = -1;
     for (int s = 0; s < 16; s++) {
-        uint64_t addr = S.vbuf[s].address, gpu;
-        if (!addr) continue;
+        uint64_t addr = S.vbuf[s].address, gpu = 0;
+        if (!addr) {
+            enc_r_vbuf(en, VB_SLOT(s), dummy_buf_gpu());
+            continue;
+        }
         if (((addr & 3) && S.vbuf[s].size) || g_vbuf_need[s]) { uint64_t c = vbuf_unaligned(addr, S.vbuf[s].size, g_vbuf_need[s], 0); if (c) { cache[s].addr = 0; enc_r_vbuf(en, VB_SLOT(s), c); continue; } }   // not cached: the copy is per submission
         if (g_vbuf_cache && cache[s].addr == addr && cache[s].gen == gen) { gpu = cache[s].gpu; g_vbuf_reuse++; }
         else {
@@ -6892,15 +6901,14 @@ static int bind_vbufs(id<MTL4RenderCommandEncoder> en, const nvn_refl *rf) {
             if (!mtl_gpu_addr(addr, S.vbuf[s].size ? S.vbuf[s].size : 1, &mb, &mo, &gpu)) {
                 cache[s].addr = 0;
                 if (bad < 0 && used >> s & 1) bad = s;   // a stale stream no input reads is no matter
+                enc_r_vbuf(en, VB_SLOT(s), dummy_buf_gpu());
                 continue;
             }
             cache[s].addr = addr; cache[s].gpu = gpu; cache[s].gen = gen;
         }
-        enc_r_vbuf(en, VB_SLOT(s), gpu);
+        enc_r_vbuf(en, VB_SLOT(s), gpu ? gpu : dummy_buf_gpu());
     }
-    static id<MTLBuffer> zero; static uint64_t zero_gpu;
-    if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); zero_gpu = zero.gpuAddress; }
-    enc_r_vbuf(en, 30, zero_gpu);
+    enc_r_vbuf(en, 30, dummy_buf_gpu());
     return bad;
 }
 // The per-draw layout block of a pulling pipeline (dm/gfx/tools/dmsh_pull.metal dm_vlayout, at buffer 16): per stream the base address, stride and divisor, per NVN attribute its
@@ -7461,7 +7469,7 @@ static void vconv_bind(id<MTL4RenderCommandEncoder> en, NvShader *vs, int tf, co
                 else RED_ONCE(96, "vertex attribute format %#x (8 / 16-bit integer) feeds an integer input of the opposite signedness: extended to 32 bits with the format's own signedness on the CPU at replay and bound separately", f);
             } else if (nt) RED_ONCE(90, "vertex attribute conversion: a range of %llu vertices exceeds the per-frame staging (format %#x)", (unsigned long long)nt, f);
         }
-        if (gpu) enc_r_vbuf(en, (NSUInteger)slot, gpu - v0 * 16);   // vertex id v0 reads the first converted element
+        enc_r_vbuf(en, (NSUInteger)slot, gpu ? gpu - v0 * 16 : dummy_buf_gpu());
         slot++;
     }
 }
@@ -9646,6 +9654,9 @@ static id<MTLBuffer> dummy_buf(void) {
 }
 id<MTLBuffer> mtl_dummy_buf(void) { return dummy_buf(); }
 static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy_buf().gpuAddress; return gpu; }
+uint64_t mtl_dummy_buf_gpu(void) { return dummy_buf_gpu(); }
+uint64_t mtl_dummy_tex_rid(int dtt, int dpf) { return dummy_tex_rid(dtt, dpf); }
+id<MTLSamplerState> mtl_dummy_samp(void) { return dummy_samp(); }
 // The texture of an image slot (a view of the shader's class and type when the texture's differ, img_fit), else the write sink. Caller holds g_rmu
 static id<MTLTexture> img_binding(int tid, const nvn_rbind *b, uint64_t *rid, int *real) {
     void *tv = NULL; *rid = tid ? tex_fast_rid(tid, &tv) : 0;
@@ -10516,6 +10527,32 @@ static void dummy_prewarm(void) {
             dummy_tbuf(p);
         }
         res_commit();
+        uint64_t dgpu = dummy_buf_gpu();
+        id real_vt = rec_table_real(g_vt);
+        id real_ft = rec_table_real(g_ft);
+        id real_ct = rec_table_real(g_ct);
+        id real_ot = rec_table_real(g_ot);
+        id real_up_ct = rec_table_real(g_up_ct);
+        for (NSUInteger k = 0; k < 31; k++) {
+            if (real_vt) [(id<MTL4ArgumentTable>)real_vt setAddress:dgpu atIndex:k];
+            if (real_ft) [(id<MTL4ArgumentTable>)real_ft setAddress:dgpu atIndex:k];
+            if (real_ct) [(id<MTL4ArgumentTable>)real_ct setAddress:dgpu atIndex:k];
+            if (real_ot) [(id<MTL4ArgumentTable>)real_ot setAddress:dgpu atIndex:k];
+            if (real_up_ct) [(id<MTL4ArgumentTable>)real_up_ct setAddress:dgpu atIndex:k];
+            g_vt_addr[k] = dgpu;
+        }
+        uint64_t tr = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
+        uint64_t sr = dummy_samp().gpuResourceID._impl;
+        if (real_vt) { [(id<MTL4ArgumentTable>)real_vt setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_vt setSamplerState:(MTLResourceID){sr} atIndex:0]; }
+        if (real_ft) { [(id<MTL4ArgumentTable>)real_ft setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_ft setSamplerState:(MTLResourceID){sr} atIndex:0]; }
+        if (real_ct) { [(id<MTL4ArgumentTable>)real_ct setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_ct setSamplerState:(MTLResourceID){sr} atIndex:0]; }
+        if (real_ot) { [(id<MTL4ArgumentTable>)real_ot setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_ot setSamplerState:(MTLResourceID){sr} atIndex:0]; }
+        if (g_present_args) {
+            [(id<MTL4ArgumentTable>)g_present_args setAddress:dgpu atIndex:0];
+            [(id<MTL4ArgumentTable>)g_present_args setTexture:(MTLResourceID){tr} atIndex:0];
+            [(id<MTL4ArgumentTable>)g_present_args setSamplerState:(MTLResourceID){sr} atIndex:0];
+        }
+        g_vt_valid = 0x7fffffff;
     }
 }
 static id<MTL4RenderCommandEncoder> rp_begin(void);
