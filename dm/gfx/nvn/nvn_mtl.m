@@ -6398,6 +6398,15 @@ static inline __attribute__((always_inline)) void *tex_fast(int tid) {
 // and the deferred lighting shader samples it as 2D: the ambient light of the whole picture became one colour, washed out white. A 2D texture in a cube or 3D slot reads zero; any other mismatch is reported once. Caller holds g_rmu
 #define DMY_NT 10   // one dummy per MTLTextureType value, 1D (0) to TextureBuffer (9)
 static id<MTLTexture> dummy_tex(int dtt, int dpf); static uint64_t g_dummy_tex_rid[DMY_NT][4];
+static inline uint64_t dummy_tex_rid(int dtt, int dpf) {
+    id<MTLTexture> t = dummy_tex(dtt, dpf);
+    if (t) {
+        uint64_t r = t.gpuResourceID._impl;
+        g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] = r;
+        return r;
+    }
+    return g_dummy_tex_rid[dtt % DMY_NT][dpf & 3];
+}
 // The layers a view of t takes for a slot declared as want, or 0 when no view bridges the two types. 2D, 2D array, cube and cube array are all layers to Maxwell, which keeps a cube's faces as six
 // of them; the declared type only says how many layers the view takes, for sampling and image access alike. Measured on an M4 Pro, a mismatched cube reads face 0 in every direction through a cube
 // array argument and layer 0 at every index through a 2D array argument (Splatoon Raiders binds a cube view in a slot its sky-like shader declares as a cube array, index 0); the view reads every
@@ -6422,33 +6431,33 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
         // Uniform-controlled branches can leave unused cube inputs holding 2D descriptors (Echoes of Wisdom).
         // Binding alone cannot establish that a mismatched input is sampled; this supported fallback is informational.
         static int noted; if (!noted++) MLOG("cube binding fallback: texture ID %d has a 2D descriptor; zero cube bound (the shader may leave this input unused)", tid);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
     // The same for a 2D texture or 2D array in a 3D slot: Metal makes a 3D view only of a 3D texture. Batman: Arkham Knight's shaders sample a volume through separate texture slots where
     // the game has left 2D render targets bound (553c51835a24a36a samples separate slot 2 as 3D at world coordinates, the slot holding a 720x406 RGBA16F target), from the first frames of
     // New Story on; the zero volume instead of a type mismatch whose reads are undefined. What the Switch's texture unit reads there is not known
     if (!ns && want == MTLTextureType3D && (have == MTLTextureType2D || have == MTLTextureType2DArray)) {
         static int noted; if (!noted++) MLOG("3D binding fallback: texture ID %d is %s %lux%lu (Metal format %lu); zero 3D texture bound", tid, have == MTLTextureType2D ? "2D" : "a 2D array",
                                              (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
     // A 3D texture in a 2D or 2D array slot: Metal makes a 2D view only of a 2D texture or 2D array/cube.
     // Kirby and the Forgotten Land leaves 3D color-grading LUT textures bound in slots that UI layout shaders declare as 2D:
     // the zero 2D texture instead of a type mismatch that causes an AGX GPU page fault.
     if (!ns && (want == MTLTextureType2D || want == MTLTextureType2DArray) && have == MTLTextureType3D) {
         static int noted; if (!noted++) MLOG("2D binding fallback: texture ID %d is 3D %lux%lux%lu (Metal format %lu); zero 2D texture bound", tid,
                                              (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth, (unsigned long)t.pixelFormat);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
     if (!ns && (want == MTLTextureTypeCube || want == MTLTextureTypeCubeArray) && have == MTLTextureType3D) {
         static int noted; if (!noted++) MLOG("cube binding fallback: texture ID %d is 3D; zero cube bound", tid);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
     if (!ns && want == MTLTextureType3D && (have == MTLTextureTypeCube || have == MTLTextureTypeCubeArray)) {
         static int noted; if (!noted++) MLOG("3D binding fallback: texture ID %d is cube; zero 3D bound", tid);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
 #if TARGET_OS_IPHONE
     // On iOS Apple Silicon AGX GPUs, any unbridgeable texture type mismatch causes a fatal GPU page fault.
     // Fall back to a zero dummy texture of the expected type to guarantee shader validation and GPU safety.
     if (!ns) {
         static int noted; if (!noted++) MLOG("iOS texture binding fallback: texture ID %d type %lu -> %lu; zero texture bound", tid, (unsigned long)have, (unsigned long)want);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = g_dummy_tex_rid[want % DMY_NT][NVN_DPF_FLOAT]; return z;
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z;
     }
 #endif
     if (!ns || tid <= 0 || tid >= g_ntreg) return nil;   // no view bridges it: caller falls back to dummy matching expected type and pixel format
@@ -6464,7 +6473,7 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
     if (!v) { RED_ONCE(77, "cannot create a type-compatible texture view: %lu → %lu (texture ID %d)", (unsigned long)have, (unsigned long)want, tid); return nil; }
     res_add(v); res_commit();
     r->alt = (void *)CFBridgingRetain(v); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)want; r->alt_rid = v.gpuResourceID._impl;
-    *rid = r->alt_rid; return v;
+    *rid = r->alt_rid ? r->alt_rid : (v ? v.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT)); return v;
 }
 // tex_fit for an element of a handle array (TEXD, TEXU arrays): every element is declared as the type of the one the shader picks, and the others hold whatever the slots or handles do.
 // A 2D texture in a cube array is one the shader does not pick there (Paper Mario: The Thousand-Year Door's cube samples pick slot 13 or 28, beside 2D textures in the others): nil, so the
@@ -9181,7 +9190,8 @@ static id<MTLTexture> dummy_tex(int dtt, int dpf) {
     if (tt == MTLTextureTypeTextureBuffer) {
         id<MTLTexture> tb = dummy_tbuf(dpf);
         cache[dtt % DMY_NT][dpf & 3] = tb;
-        g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] = g_dummy_tbuf_rid[dpf & 3];
+        uint64_t tr = tb ? tb.gpuResourceID._impl : g_dummy_tbuf_rid[dpf & 3];
+        g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] = tr;
         return tb;
     }
     MTLPixelFormat pf = (dpf == NVN_DPF_DEPTH && is_depth_tex_type(tt)) ? MTLPixelFormatDepth32Float :
@@ -9189,7 +9199,10 @@ static id<MTLTexture> dummy_tex(int dtt, int dpf) {
                         dpf == NVN_DPF_UINT ? MTLPixelFormatRGBA32Uint :
                         dpf == NVN_DPF_SINT ? MTLPixelFormatRGBA32Sint : MTLPixelFormatRGBA8Unorm;
     id<MTLTexture> t = cache[dtt % DMY_NT][dpf & 3];
-    if (t) return t;
+    if (t) {
+        if (!g_dummy_tex_rid[dtt % DMY_NT][dpf & 3]) g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] = t.gpuResourceID._impl;
+        return t;
+    }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.textureType = tt; d.pixelFormat = pf; d.width = d.height = d.depth = 1; d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageShaderRead;
     if (tt == MTLTextureType2DMultisample || tt == MTLTextureType2DMultisampleArray) {
@@ -9539,7 +9552,8 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
     int n = (samp ? g_nsreg : g_ntreg) - base; if (n < 1) n = 1;
     id<MTLBuffer> b = pool_table_take(DMSH_POOL_HEAD + 8 * (size_t)(n + 1));
     uint8_t *c = b.contents; *(uint32_t *)c = (uint32_t)n; if (!samp) *(uint64_t *)(c + 8) = pool_seen_gpu();
-    uint64_t *e = (uint64_t *)(c + DMSH_POOL_HEAD), dummy = samp ? dummy_samp_rid() : (dummy_tex(dtt, dpf) ? g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] : 0);
+    uint64_t *e = (uint64_t *)(c + DMSH_POOL_HEAD), dummy = samp ? dummy_samp_rid() : dummy_tex_rid(dtt, dpf);
+    if (!dummy) dummy = samp ? dummy_samp().gpuResourceID._impl : dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
     int real = 0, gone = 0, left = 0, left_req = 0; uint64_t limit = samp ? UINT64_MAX : pool_walk_limit(base, n);
     pool_ids nd = {0}, nt = {0}; ids_begin(0); ids_begin(1);
     for (int i = 0; i < n; i++) {
@@ -9916,7 +9930,8 @@ static uint64_t htab_gpu(int stage, const nvn_rbind *b, __unsafe_unretained id<M
     if (!p) { p = free_ ? free_ : &g_htab[g_htab_next++ % HTAB_SNAPS]; if (p->buf) defer_obj_release(p->buf); uint8_t *keep = p->copy; uint64_t *ks = p->ser; uint32_t cap = p->cap; *p = (htab_snap){0}; p->copy = keep; p->ser = ks; p->cap = cap; }
     uint32_t n = 0; const uint32_t *w = (const uint32_t *)now;
     for (uint32_t k = bytes / 8; k > 0 && !n; k--) if (w[(k - 1) * 2]) n = k;
-    uint64_t dummy = samp ? dummy_samp_rid() : (dummy_tex(b->dtt, b->dpf) ? g_dummy_tex_rid[b->dtt % DMY_NT][b->dpf & 3] : 0);
+    uint64_t dummy = samp ? dummy_samp_rid() : dummy_tex_rid(b->dtt, b->dpf);
+    if (!dummy) dummy = samp ? dummy_samp().gpuResourceID._impl : dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
     if (p->cap < bytes) { free(p->copy); free(p->ser); p->copy = malloc(bytes ? bytes : 8); p->ser = malloc(bytes ? bytes : 8); p->cap = bytes; }
     static uint64_t e[8193];
     for (uint32_t k = 0; k < n; k++) { uint64_t r = 0; p->ser[k] = 0;
@@ -10077,7 +10092,9 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 int sid = sampu_id(nvn_stage, b, k); if (sid >= g_nsreg || !g_sreg_ok[sid]) sid = 0;
                 if (bl && (sid || (b->soff && b->sreg == DMSH_SREG_C2 && !k))) PD("B %llu st%d sampu [%d] sid=%d%s", g_stat_pass, nvn_stage, k, sid, b->soff && b->sreg == DMSH_SREG_C2 ? " from c2" : "");
                 __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
-                slots[aid + k] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                uint64_t sr = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                if (!sr) sr = dummy_samp().gpuResourceID._impl;
+                slots[aid + k] = sr;
                 USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             }
         } else if (b->kind == NVN_RB_TEXU && b->n) {   // an array of handles in a uniform buffer that the shader indexes at run time (Ryujinx's texture array from a buffer): element k = the handle
@@ -10089,9 +10106,10 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
 #if TARGET_OS_IPHONE
                 if (t && b->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != b->dpf) { t = nil; }
 #endif
-                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt % DMY_NT][b->dpf & 3]; } else real |= 1ull << k;
+                if (!t || !trid) { t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); } else real |= 1ull << k;
                 if (bl && tid) PD("B %llu st%d texu [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
                 if (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) t = tbuf_shadow(t, &trid);   // see tbuf_shadow
+                if (!trid) { if (!t) t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); }
                 slots[aid + k] = trid;
                 USE(t, MTLResourceUsageRead);
             }
@@ -10103,7 +10121,11 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (b->bw && ss && g_sview_w[sid]) {   // a twin (dmsh_build.py border_emu) of a sampler whose border colour Metal lacks: the shader corrects its samples
                 ss = (__bridge id<MTLSamplerState>)g_sview_w[sid]; slots[aid] = g_srid_w[sid];
                 bmask |= 1u << (b->bw - 1); memcpy(bk[b->bw - 1], g_sbk[sid], sizeof bk[0]);
-            } else slots[aid] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();   // a twin of any other sampler is never sampled
+            } else {
+                uint64_t sr = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                if (!sr) sr = dummy_samp().gpuResourceID._impl;
+                slots[aid] = sr;
+            }
             USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // g_rmu is already held in this section
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d (0 nearest / 1 linear; 2–5 with mips) wrap=%d,%d,%d border=%g,%g,%g,%g lod=%g..%g bias=%g aniso=%g cmp=%d/%d %s", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf,
@@ -10138,8 +10160,9 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 t = nil;
             }
 #endif
-            if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt % DMY_NT][b->dpf & 3]; }
+            if (!t || !trid) { t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); }
             else if (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) t = tbuf_shadow(t, &trid);   // see tbuf_shadow
+            if (!trid) { if (!t) t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); }
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_IMG || b->kind == NVN_RB_IMGU) {   // Storage image: NVN image slot r (BindImages) ↔ D3D u_r, or its handle in a uniform buffer (IMGU)
@@ -10158,6 +10181,8 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                                            tt->d.target == NVN_TEXTURE_TARGET_BUFFER || (tt->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) ? "linear" : "block-linear", (unsigned long long)tt->L.size); }
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu fmt=%lu %lux%lu view_sl=%lu array=%lu target=%lu shader wants target %u", g_stat_pass, nvn_stage, reg, tid, real ? "real" : "dummy", real && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                                   (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType, (unsigned)b->dtt);
+            if (!trid && t) trid = t.gpuResourceID._impl;
+            if (!trid) { t = dummy_img(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }
             slots[aid] = trid;
             USE(t, snap >= 0 ? MTLResourceUsageRead : MTLResourceUsageRead | MTLResourceUsageWrite);
         } else if (b->kind == NVN_RB_TBUF || b->kind == NVN_RB_TBUFU) {   // Typed buffer: the buffer texture (target BUFFER) in texture slot r, or its handle in a uniform buffer (TBUFU)
@@ -10166,8 +10191,10 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (t && t.textureType != MTLTextureTypeTextureBuffer) { tex_mis_note(sh, nvn_stage, reg, tid, t, MTLTextureTypeTextureBuffer, "a buffer slot: it reads 0 (dummy)"); t = nil; }
             if (bl) PD("B %llu st%d tbuf reg%d tid=%d %s ser=%llu fmt=%#x n=%u mem=%p", g_stat_pass, nvn_stage, reg, tid, t ? "real" : "dummy", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                        tid < g_ntreg ? g_treg[tid].t.d.format : 0, tid < g_ntreg ? g_treg[tid].t.d.width : 0, tid < g_ntreg ? (void *)g_treg[tid].t.mem : NULL);
-            if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
+            if (!t || !trid) { t = dummy_tbuf(b->dpf); trid = t ? t.gpuResourceID._impl : g_dummy_tbuf_rid[b->dpf & 3]; }
             else t = tbuf_shadow(t, &trid);   // see tbuf_shadow
+            if (!trid && t) trid = t.gpuResourceID._impl;
+            if (!trid) { t = dummy_tbuf(b->dpf); trid = t ? t.gpuResourceID._impl : g_dummy_tbuf_rid[b->dpf & 3]; }
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_TEXD) {   // dynamic handle array (profile key tex_dyn_slots): element k = the texture in slot k (combined, else separate), since c2 holds slot indices for this shader (see DRV2 below)
@@ -10177,17 +10204,18 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
                 if (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) {
                     if (t && t.textureType != MTLTextureTypeTextureBuffer) t = nil;   // a slot the shader does not pick here may hold another kind of texture
-                    if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
+                    if (!t || !trid) { t = dummy_tbuf(b->dpf); trid = t ? t.gpuResourceID._impl : g_dummy_tbuf_rid[b->dpf & 3]; }
                     else t = tbuf_shadow(t, &trid);   // see tbuf_shadow
                 } else {
                     if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }
 #if TARGET_OS_IPHONE
                     if (t && b->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != b->dpf) { t = nil; }
 #endif
-                    if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt % DMY_NT][b->dpf & 3]; }
+                    if (!t || !trid) { t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); }
                 }
                 if (bl && tid) PD("B %llu st%d texd [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
                 if (tv && trid && trid != g_dummy_tbuf_rid[b->dpf & 3] && trid != g_dummy_tex_rid[b->dtt % DMY_NT][b->dpf & 3]) real |= 1ull << k;
+                if (!trid) { if (!t) t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); }
                 slots[aid + k] = trid;
                 USE(t, MTLResourceUsageRead);
             }
@@ -10212,9 +10240,10 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
 #if TARGET_OS_IPHONE
                 if (t && b->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != b->dpf) { t = nil; }
 #endif
-                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt % DMY_NT][b->dpf & 3]; } else if (k < 64) real |= 1ull << k;
+                if (!t || !trid) { t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); } else if (k < 64) real |= 1ull << k;
                 if (bl && tid) PD("B %llu st%d texa [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
                 if (b->dtt == (uint8_t)MTLTextureTypeTextureBuffer) t = tbuf_shadow(t, &trid);   // see tbuf_shadow
+                if (!trid) { if (!t) t = dummy_tex(b->dtt, b->dpf); trid = t ? t.gpuResourceID._impl : dummy_tex_rid(b->dtt, b->dpf); }
                 slots[aid + k] = trid;
                 USE(t, MTLResourceUsageRead);
             }
@@ -10224,7 +10253,9 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             for (int k = 0; k < b->n; k++) {
                 int sid = (int)((c2_handle(nvn_stage, b->off + 8u * k) | sw) >> 20);
                 __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
-                slots[aid + k] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                uint64_t sr = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                if (!sr) sr = dummy_samp().gpuResourceID._impl;
+                slots[aid + k] = sr;
                 USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             }
         } else if (b->kind == NVN_RB_SAMPD) {   // its samplers: element k = the separate sampler in slot k, else the sampler of a combined handle in texture slot k
@@ -10232,7 +10263,9 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 int sid = k < 128 ? (int)(S.samp[nvn_stage][k] >> 20) : 0;
                 if (!sid && k < NTEX) sid = (int)(S.tex[nvn_stage][k] >> 20);
                 __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
-                slots[aid + k] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                uint64_t sr = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                if (!sr) sr = dummy_samp().gpuResourceID._impl;
+                slots[aid + k] = sr;
                 USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             }
         } else if (b->kind == NVN_RB_SBUFP || b->kind == NVN_RB_UBOP) {   // B: storage buffers / compute-stage uniforms are device pointers; the address is taken by NVN slot
@@ -10328,6 +10361,12 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     }
     #undef USE
     os_unfair_lock_unlock(&g_rmu);
+#if TARGET_OS_IPHONE
+    int nslots = (int)(arg_len / sizeof(uint64_t));
+    for (int s = 0; s < nslots && s < NVN_REFL_MAXARG; s++) {
+        if (!slots[s]) slots[s] = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
+    }
+#endif
     id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab);
     memcpy(g_cur_arena->cpu + off, slots, arg_len);
     if (gmem_aid >= 0) gmem_slot_note((uint64_t *)(void *)(g_cur_arena->cpu + off) + gmem_aid, gml_taken ? (__bridge void *)g_gml_last : NULL);   // the arena arena_alloc took it from (no contents message: see ubo_read)
