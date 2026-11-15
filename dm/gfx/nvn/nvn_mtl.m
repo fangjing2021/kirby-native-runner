@@ -6668,6 +6668,13 @@ id<MTLSamplerState> mtl_lookup_sampler_by_sid(uint32_t sid) {
     return nil;
 }
 
+id<MTLTexture> mtl_lookup_texture_by_tid(uint32_t tid) {
+    if (tid > 0 && tid < (uint32_t)g_ntreg && g_treg && g_treg[tid].ok && g_treg[tid].view) {
+        return (__bridge id<MTLTexture>)g_treg[tid].view;
+    }
+    return nil;
+}
+
 // ---------- Argument buffer blocks: one block per submission, reclaimed after the GPU completes ----------
 @interface NvArena : NSObject { @public id<MTLBuffer> buf; uint8_t *cpu; uint64_t gpu, fence; size_t used, len; } @end   // len: buf.length and cpu: buf.contents, kept so an allocation and its writes send no message
 @implementation NvArena @end

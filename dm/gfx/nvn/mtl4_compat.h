@@ -38,6 +38,7 @@ typedef uint64_t MTLGPUAddress;
 void mtl_register_texture(id<MTLTexture> tex);
 void mtl_register_sampler(id<MTLSamplerState> samp);
 id<MTLTexture> mtl_lookup_texture(uint64_t rid);
+id<MTLTexture> mtl_lookup_texture_by_tid(uint32_t tid);
 id<MTLSamplerState> mtl_lookup_sampler(uint64_t rid);
 id<MTLSamplerState> mtl_lookup_sampler_by_sid(uint32_t sid);
 

@@ -234,6 +234,9 @@ static char kCompatCtKey;
             t->_encoder = nil;
         }
     }
+    if (s_active_vt && s_active_vt->_encoder == nil) s_active_vt = nil;
+    if (s_active_ft && s_active_ft->_encoder == nil) s_active_ft = nil;
+    if (s_active_ct && s_active_ct->_encoder == nil) s_active_ct = nil;
     os_unfair_lock_unlock(&s_tables_lock);
 }
 
@@ -241,8 +244,9 @@ static char kCompatCtKey;
     if (index >= 32) return;
     id enc = _encoder;
     if (!enc) return;
-    id<MTLBuffer> buf = (_valid_mask & (1u << index)) && _buffers[index] ? _buffers[index] : mtl_dummy_buf();
-    NSUInteger off = (_valid_mask & (1u << index)) && _buffers[index] ? _offsets[index] : 0;
+    if (!(_valid_mask & (1u << index))) return;
+    id<MTLBuffer> buf = _buffers[index] ? _buffers[index] : mtl_dummy_buf();
+    NSUInteger off = _offsets[index];
     if (!buf) buf = mtl_dummy_buf();
     if (buf) {
         if (off >= buf.length) off = 0;
@@ -266,7 +270,8 @@ static char kCompatCtKey;
     if (index >= 32) return;
     id enc = _encoder;
     if (!enc) return;
-    id<MTLTexture> tex = (_texture_valid_mask & (1u << index)) && _textures[index] ? _textures[index] : mtl_dummy_tex(0, 0);
+    if (!(_texture_valid_mask & (1u << index))) return;
+    id<MTLTexture> tex = _textures[index] ? _textures[index] : mtl_dummy_tex(0, 0);
     if (!tex) return;
     if (_is_compute) {
         if ([enc respondsToSelector:@selector(setTexture:atIndex:)]) {
@@ -286,7 +291,8 @@ static char kCompatCtKey;
     if (index >= 32) return;
     id enc = _encoder;
     if (!enc) return;
-    id<MTLSamplerState> samp = (_sampler_valid_mask & (1u << index)) && _samplers[index] ? _samplers[index] : mtl_dummy_samp();
+    if (!(_sampler_valid_mask & (1u << index))) return;
+    id<MTLSamplerState> samp = _samplers[index] ? _samplers[index] : mtl_dummy_samp();
     if (!samp) return;
     if (_is_compute) {
         if ([enc respondsToSelector:@selector(setSamplerState:atIndex:)]) {
@@ -306,22 +312,24 @@ static char kCompatCtKey;
     if (!encoder) return;
     id<MTLBuffer> d = mtl_dummy_buf();
     for (NSUInteger i = 0; i < 32; i++) {
-        id<MTLBuffer> buf = (_valid_mask & (1u << i)) && _buffers[i] ? _buffers[i] : d;
-        NSUInteger off = (_valid_mask & (1u << i)) && _buffers[i] ? _offsets[i] : 0;
-        if (!buf) buf = d;
-        if (buf) {
-            if (off >= buf.length) off = 0;
-            off &= ~3u;
-            if (_is_compute) {
-                if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
-                    [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
-                }
-            } else {
-                if ((_render_stages & MTLRenderStageVertex) && [encoder respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
-                    [(id<MTLRenderCommandEncoder>)encoder setVertexBuffer:buf offset:off atIndex:i];
-                }
-                if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
-                    [(id<MTLRenderCommandEncoder>)encoder setFragmentBuffer:buf offset:off atIndex:i];
+        if (_valid_mask & (1u << i)) {
+            id<MTLBuffer> buf = _buffers[i] ? _buffers[i] : d;
+            NSUInteger off = _offsets[i];
+            if (!buf) buf = d;
+            if (buf) {
+                if (off >= buf.length) off = 0;
+                off &= ~3u;
+                if (_is_compute) {
+                    if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+                        [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
+                    }
+                } else {
+                    if ((_render_stages & MTLRenderStageVertex) && [encoder respondsToSelector:@selector(setVertexBuffer:offset:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setVertexBuffer:buf offset:off atIndex:i];
+                    }
+                    if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setFragmentBuffer:buf offset:off atIndex:i];
+                    }
                 }
             }
         }
@@ -387,10 +395,9 @@ static char kCompatCtKey;
             _valid_mask |= (1u << index);
         }
     } else {
-        id<MTLBuffer> d = mtl_dummy_buf();
-        _buffers[index] = d;
+        _buffers[index] = nil;
         _offsets[index] = 0;
-        _valid_mask |= (1u << index);
+        _valid_mask &= ~(1u << index);
     }
     [self applyToIndex:index];
 }
@@ -400,6 +407,9 @@ static char kCompatCtKey;
     id<MTLTexture> tex = nil;
     if (texture._impl) {
         tex = mtl_lookup_texture(texture._impl);
+        if (!tex && texture._impl < 65536) {
+            tex = mtl_lookup_texture_by_tid((uint32_t)texture._impl);
+        }
     }
     if (!tex) tex = mtl_dummy_tex(0, 0);
     _textures[index] = tex;
@@ -838,8 +848,11 @@ static char kFenceKey;
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
     if (mtl_addr(indirectBuffer, 12, &ind_buf, &ind_off) && ind_buf) {
-        if ([self respondsToSelector:@selector(dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:)]) {
-            [(id<MTLComputeCommandEncoder>)self dispatchThreadgroupsWithIndirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off threadsPerThreadgroup:threadsPerThreadgroup];
+        id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)ind_buf;
+        if (ind_off + 12 <= mbuf.length && (ind_off & 3) == 0) {
+            if ([self respondsToSelector:@selector(dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:)]) {
+                [(id<MTLComputeCommandEncoder>)self dispatchThreadgroupsWithIndirectBuffer:mbuf indirectBufferOffset:ind_off threadsPerThreadgroup:threadsPerThreadgroup];
+            }
         }
     }
 }
@@ -849,8 +862,11 @@ static char kFenceKey;
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
     if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off) && ind_buf) {
-        if ([self respondsToSelector:@selector(drawPrimitives:indirectBuffer:indirectBufferOffset:)]) {
-            [(id<MTLRenderCommandEncoder>)self drawPrimitives:primitiveType indirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off];
+        id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)ind_buf;
+        if (ind_off + 16 <= mbuf.length && (ind_off & 3) == 0) {
+            if ([self respondsToSelector:@selector(drawPrimitives:indirectBuffer:indirectBufferOffset:)]) {
+                [(id<MTLRenderCommandEncoder>)self drawPrimitives:primitiveType indirectBuffer:mbuf indirectBufferOffset:ind_off];
+            }
         }
     }
 }
@@ -859,10 +875,14 @@ static char kFenceKey;
     [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *buf = NULL;
     uint64_t off = 0;
-    NSUInteger min_len = indexCount * (indexType == MTLIndexTypeUInt16 ? 2 : 4);
+    NSUInteger isz = (indexType == MTLIndexTypeUInt16 ? 2 : 4);
+    NSUInteger min_len = indexCount * isz;
     if ((mtl_addr(indexBuffer, indexBufferLength, &buf, &off) || mtl_addr(indexBuffer, min_len, &buf, &off)) && buf) {
-        if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:)]) {
-            [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexCount:indexCount indexType:indexType indexBuffer:(__bridge id<MTLBuffer>)buf indexBufferOffset:off instanceCount:instanceCount baseVertex:baseVertex baseInstance:baseInstance];
+        id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)buf;
+        if ((off % isz) == 0 && off + min_len <= mbuf.length) {
+            if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:)]) {
+                [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexCount:indexCount indexType:indexType indexBuffer:mbuf indexBufferOffset:off instanceCount:instanceCount baseVertex:baseVertex baseInstance:baseInstance];
+            }
         }
     }
 }
@@ -871,9 +891,14 @@ static char kFenceKey;
     [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *ibuf = NULL, *ind_buf = NULL;
     uint64_t ioff = 0, ind_off = 0;
+    NSUInteger isz = (indexType == MTLIndexTypeUInt16 ? 2 : 4);
     if ((mtl_addr(indexBuffer, indexBufferLength, &ibuf, &ioff) || mtl_addr(indexBuffer, 1, &ibuf, &ioff)) && ibuf && mtl_addr(indirectBuffer, 20, &ind_buf, &ind_off) && ind_buf) {
-        if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:)]) {
-            [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexType:indexType indexBuffer:(__bridge id<MTLBuffer>)ibuf indexBufferOffset:ioff indirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off];
+        id<MTLBuffer> mibuf = (__bridge id<MTLBuffer>)ibuf;
+        id<MTLBuffer> mind_buf = (__bridge id<MTLBuffer>)ind_buf;
+        if ((ioff % isz) == 0 && (ind_off & 3) == 0 && ind_off + 20 <= mind_buf.length) {
+            if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:)]) {
+                [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexType:indexType indexBuffer:mibuf indexBufferOffset:ioff indirectBuffer:mind_buf indirectBufferOffset:ind_off];
+            }
         }
     }
 }
@@ -882,8 +907,11 @@ static char kFenceKey;
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
     if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off) && ind_buf) {
-        if ([self respondsToSelector:@selector(drawMeshThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:)]) {
-            [(id<MTLRenderCommandEncoder>)self drawMeshThreadgroupsWithIndirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off threadsPerObjectThreadgroup:threadsPerObject threadsPerMeshThreadgroup:threadsPerMesh];
+        id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)ind_buf;
+        if (ind_off + 16 <= mbuf.length && (ind_off & 3) == 0) {
+            if ([self respondsToSelector:@selector(drawMeshThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:)]) {
+                [(id<MTLRenderCommandEncoder>)self drawMeshThreadgroupsWithIndirectBuffer:mbuf indirectBufferOffset:ind_off threadsPerObjectThreadgroup:threadsPerObject threadsPerMeshThreadgroup:threadsPerMesh];
+            }
         }
     }
 }
