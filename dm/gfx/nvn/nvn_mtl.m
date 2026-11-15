@@ -6648,10 +6648,10 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
     d.borderColor = (MTLSamplerBorderColor)bn;
     d.supportArgumentBuffers = YES;
     id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d];
-    if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; }
+    if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; mtl_register_sampler(s); }
     if (s && twin) {
         d.borderColor = (MTLSamplerBorderColor)bw; id<MTLSamplerState> t = [g_dev newSamplerStateWithDescriptor:d];
-        if (t) { g_sview_w[sid] = (void *)CFBridgingRetain(t); g_srid_w[sid] = t.gpuResourceID._impl; memcpy(g_sbk[sid], k, sizeof k); }
+        if (t) { g_sview_w[sid] = (void *)CFBridgingRetain(t); g_srid_w[sid] = t.gpuResourceID._impl; memcpy(g_sbk[sid], k, sizeof k); mtl_register_sampler(t); }
         static int nlog; if (nlog++ < 16) MLOG("sampler ID %d: border colour %g,%g,%g,%g, which Metal lacks: Metal colour %d, corrected in the shaders through a twin of colour %d", sid, p.border[0], p.border[1], p.border[2], p.border[3], bn, bw);
     }
     return s;
@@ -6659,6 +6659,13 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
 static inline __attribute__((always_inline)) void *samp_fast(int sid) {
     if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid] && g_sview[sid]) return g_sview[sid];
     return (__bridge void *)samp_by_id(sid);
+}
+
+id<MTLSamplerState> mtl_lookup_sampler_by_sid(uint32_t sid) {
+    if (sid > 0 && sid < (uint32_t)g_nsreg && g_sreg_ok && g_sreg_ok[sid] && g_sview && g_sview[sid]) {
+        return (__bridge id<MTLSamplerState>)g_sview[sid];
+    }
+    return nil;
 }
 
 // ---------- Argument buffer blocks: one block per submission, reclaimed after the GPU completes ----------

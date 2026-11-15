@@ -400,9 +400,6 @@ static char kCompatCtKey;
     id<MTLTexture> tex = nil;
     if (texture._impl) {
         tex = mtl_lookup_texture(texture._impl);
-        if (!tex && [(__bridge id)(void *)(uintptr_t)texture._impl conformsToProtocol:@protocol(MTLTexture)]) {
-            tex = (__bridge id<MTLTexture>)(void *)(uintptr_t)texture._impl;
-        }
     }
     if (!tex) tex = mtl_dummy_tex(0, 0);
     _textures[index] = tex;
@@ -415,8 +412,8 @@ static char kCompatCtKey;
     id<MTLSamplerState> samp = nil;
     if (sampler._impl) {
         samp = mtl_lookup_sampler(sampler._impl);
-        if (!samp && [(__bridge id)(void *)(uintptr_t)sampler._impl conformsToProtocol:@protocol(MTLSamplerState)]) {
-            samp = (__bridge id<MTLSamplerState>)(void *)(uintptr_t)sampler._impl;
+        if (!samp && sampler._impl < 65536) {
+            samp = mtl_lookup_sampler_by_sid((uint32_t)sampler._impl);
         }
     }
     if (!samp) samp = mtl_dummy_samp();
