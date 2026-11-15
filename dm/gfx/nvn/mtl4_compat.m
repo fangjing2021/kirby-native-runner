@@ -196,6 +196,7 @@ static char kCompatCtKey;
     id<MTLBuffer> buf = (_valid_mask & (1u << index)) && _buffers[index] ? _buffers[index] : mtl_dummy_buf();
     NSUInteger off = (_valid_mask & (1u << index)) && _buffers[index] ? _offsets[index] : 0;
     if (!buf) buf = mtl_dummy_buf();
+    if (buf && off >= buf.length) off = 0;
     if (_is_compute) {
         if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
             [(id<MTLComputeCommandEncoder>)enc setBuffer:buf offset:off atIndex:index];
@@ -218,6 +219,7 @@ static char kCompatCtKey;
         NSUInteger off = (_valid_mask & (1u << i)) && _buffers[i] ? _offsets[i] : 0;
         if (!buf) buf = d;
         if (buf) {
+            if (off >= buf.length) off = 0;
             if (_is_compute) {
                 if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
                     [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
@@ -241,9 +243,17 @@ static char kCompatCtKey;
         void *b = NULL;
         uint64_t off = 0;
         if (mtl_addr(address, 1, &b, &off) && b) {
-            _buffers[index] = (__bridge id<MTLBuffer>)b;
-            _offsets[index] = (NSUInteger)off;
-            _valid_mask |= (1u << index);
+            id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)b;
+            if (off < mbuf.length) {
+                _buffers[index] = mbuf;
+                _offsets[index] = (NSUInteger)off;
+                _valid_mask |= (1u << index);
+            } else {
+                id<MTLBuffer> d = mtl_dummy_buf();
+                _buffers[index] = d;
+                _offsets[index] = 0;
+                _valid_mask |= (1u << index);
+            }
         } else {
             id<MTLBuffer> d = mtl_dummy_buf();
             _buffers[index] = d;
@@ -680,49 +690,55 @@ static char kFenceKey;
     }
 }
 - (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    if (!indirectBuffer) return;
     [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
-    if (mtl_addr(indirectBuffer, 12, &ind_buf, &ind_off)) {
+    if (mtl_addr(indirectBuffer, 12, &ind_buf, &ind_off) && ind_buf) {
         if ([self respondsToSelector:@selector(dispatchThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerThreadgroup:)]) {
             [(id<MTLComputeCommandEncoder>)self dispatchThreadgroupsWithIndirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off threadsPerThreadgroup:threadsPerThreadgroup];
         }
     }
 }
 - (void)drawPrimitives:(MTLPrimitiveType)primitiveType indirectBuffer:(uint64_t)indirectBuffer {
+    if (!indirectBuffer) return;
     [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
-    if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off)) {
+    if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off) && ind_buf) {
         if ([self respondsToSelector:@selector(drawPrimitives:indirectBuffer:indirectBufferOffset:)]) {
             [(id<MTLRenderCommandEncoder>)self drawPrimitives:primitiveType indirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off];
         }
     }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexCount:(NSUInteger)indexCount indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength instanceCount:(NSUInteger)instanceCount baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance {
+    if (!indexCount || !indexBuffer || !indexBufferLength || !instanceCount) return;
     [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *buf = NULL;
     uint64_t off = 0;
-    if (mtl_addr(indexBuffer, indexBufferLength, &buf, &off)) {
+    NSUInteger min_len = indexCount * (indexType == MTLIndexTypeUInt16 ? 2 : 4);
+    if ((mtl_addr(indexBuffer, indexBufferLength, &buf, &off) || mtl_addr(indexBuffer, min_len, &buf, &off)) && buf) {
         if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:)]) {
             [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexCount:indexCount indexType:indexType indexBuffer:(__bridge id<MTLBuffer>)buf indexBufferOffset:off instanceCount:instanceCount baseVertex:baseVertex baseInstance:baseInstance];
         }
     }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexType:(MTLIndexType)indexType indexBuffer:(uint64_t)indexBuffer indexBufferLength:(NSUInteger)indexBufferLength indirectBuffer:(uint64_t)indirectBuffer {
+    if (!indexBuffer || !indexBufferLength || !indirectBuffer) return;
     [DmCompatArgumentTable ensureArgsForEncoder:self];
     void *ibuf = NULL, *ind_buf = NULL;
     uint64_t ioff = 0, ind_off = 0;
-    if (mtl_addr(indexBuffer, indexBufferLength, &ibuf, &ioff) && mtl_addr(indirectBuffer, 20, &ind_buf, &ind_off)) {
+    if ((mtl_addr(indexBuffer, indexBufferLength, &ibuf, &ioff) || mtl_addr(indexBuffer, 1, &ibuf, &ioff)) && ibuf && mtl_addr(indirectBuffer, 20, &ind_buf, &ind_off) && ind_buf) {
         if ([self respondsToSelector:@selector(drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:)]) {
             [(id<MTLRenderCommandEncoder>)self drawIndexedPrimitives:primitiveType indexType:indexType indexBuffer:(__bridge id<MTLBuffer>)ibuf indexBufferOffset:ioff indirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off];
         }
     }
 }
 - (void)drawMeshThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerObjectThreadgroup:(MTLSize)threadsPerObject threadsPerMeshThreadgroup:(MTLSize)threadsPerMesh {
+    if (!indirectBuffer) return;
     void *ind_buf = NULL;
     uint64_t ind_off = 0;
-    if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off)) {
+    if (mtl_addr(indirectBuffer, 16, &ind_buf, &ind_off) && ind_buf) {
         if ([self respondsToSelector:@selector(drawMeshThreadgroupsWithIndirectBuffer:indirectBufferOffset:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:)]) {
             [(id<MTLRenderCommandEncoder>)self drawMeshThreadgroupsWithIndirectBuffer:(__bridge id<MTLBuffer>)ind_buf indirectBufferOffset:ind_off threadsPerObjectThreadgroup:threadsPerObject threadsPerMeshThreadgroup:threadsPerMesh];
         }

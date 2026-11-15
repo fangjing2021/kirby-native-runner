@@ -178,13 +178,13 @@ static void rec_exec(const rec_t *r) {
     case RO_R_BLEND: [(id<MTL4RenderCommandEncoder>)e setBlendColorRed:rec_fv(a[0]) green:rec_fv(a[1]) blue:rec_fv(a[2]) alpha:rec_fv(a[3])]; break;
     case RO_R_VIS: [(id<MTL4RenderCommandEncoder>)e setVisibilityResultMode:a[0] offset:a[1]]; break;
     case RO_R_AMP: { MTLVertexAmplificationViewMapping m = {(uint32_t)a[1], (uint32_t)a[2]}; [(id<MTL4RenderCommandEncoder>)e setVertexAmplificationCount:a[0] viewMappings:a[0] ? &m : NULL]; break; }   // count 0 or 1 (slice-merged passes)
-    case RO_R_DRAW: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2]]; break;
-    case RO_R_DRAW_INST: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2] instanceCount:a[3] baseInstance:a[4]]; break;
+    case RO_R_DRAW: if (!a[2]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2]]; break;
+    case RO_R_DRAW_INST: if (!a[2] || !a[3]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2] instanceCount:a[3] baseInstance:a[4]]; break;
     case RO_R_DRAW_IND: if (!a[1]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] indirectBuffer:a[1]]; break;
-    case RO_R_DRAW_IDX: if (!a[3]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexCount:a[1] indexType:a[2] indexBuffer:a[3] indexBufferLength:a[4] instanceCount:a[5] baseVertex:(NSInteger)a[6] baseInstance:a[7]]; break;
-    case RO_R_DRAW_IDX_IND: if (!a[2] || !a[4]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexType:a[1] indexBuffer:a[2] indexBufferLength:a[3] indirectBuffer:a[4]]; break;
-    case RO_R_MESH: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroups:MTLSizeMake(a[0], 1, 1) threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;
-    case RO_R_MESH_IND: [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroupsWithIndirectBuffer:a[0] threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;   // PR #1312's indirect task / mesh draws: the encode thread (iOS) aborted on the selector
+    case RO_R_DRAW_IDX: if (!a[1] || !a[3] || !a[4] || !a[5]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexCount:a[1] indexType:a[2] indexBuffer:a[3] indexBufferLength:a[4] instanceCount:a[5] baseVertex:(NSInteger)a[6] baseInstance:a[7]]; break;
+    case RO_R_DRAW_IDX_IND: if (!a[2] || !a[3] || !a[4]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexType:a[1] indexBuffer:a[2] indexBufferLength:a[3] indirectBuffer:a[4]]; break;
+    case RO_R_MESH: if (!a[0]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroups:MTLSizeMake(a[0], 1, 1) threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;
+    case RO_R_MESH_IND: if (!a[0]) break; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroupsWithIndirectBuffer:a[0] threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;   // PR #1312's indirect task / mesh draws: the encode thread (iOS) aborted on the selector
     case RO_R_STORE_C: [(id<MTL4RenderCommandEncoder>)e setColorStoreAction:a[0] atIndex:a[1]]; break;
     case RO_R_STORE_D: [(id<MTL4RenderCommandEncoder>)e setDepthStoreAction:a[0]]; break;
     case RO_R_STORE_S: [(id<MTL4RenderCommandEncoder>)e setStencilStoreAction:a[0]]; break;
@@ -198,6 +198,7 @@ static void rec_exec(const rec_t *r) {
         e = rec_ensure_compute(g_rx_cb, e); g_rx_enc = e;
         [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroups:MTLSizeMake(a[0], a[1], a[2]) threadsPerThreadgroup:MTLSizeMake(a[3], a[4], a[5])]; break;
     case RO_C_DISPATCH_IND:
+        if (!a[0]) break;
         e = rec_ensure_compute(g_rx_cb, e); g_rx_enc = e;
         [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:a[0] threadsPerThreadgroup:MTLSizeMake(a[1], a[2], a[3])]; break;
     case RO_C_COPY_BB:
