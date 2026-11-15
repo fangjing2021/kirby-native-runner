@@ -10362,9 +10362,43 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     #undef USE
     os_unfair_lock_unlock(&g_rmu);
 #if TARGET_OS_IPHONE
-    int nslots = (int)(arg_len / sizeof(uint64_t));
-    for (int s = 0; s < nslots && s < NVN_REFL_MAXARG; s++) {
-        if (!slots[s]) slots[s] = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
+    for (int i = 0; i < sh->rf.nb; i++) {
+        const nvn_rbind *b = &sh->rf.b[i];
+        int aid = b->aid, count = b->n ? b->n : 1;
+        if (aid < 0 || aid >= NVN_REFL_MAXARG) continue;
+        if (aid + count > NVN_REFL_MAXARG) count = NVN_REFL_MAXARG - aid;
+        for (int k = 0; k < count; k++) {
+            if (!slots[aid + k]) {
+                switch (b->kind) {
+                    case NVN_RB_SAMP: case NVN_RB_SAMPT: case NVN_RB_SAMPU:
+                    case NVN_RB_SAMPD: case NVN_RB_SAMPA: case NVN_RB_SAMPI:
+                    case NVN_RB_SAMPH: case NVN_RB_SAMPP:
+                        slots[aid + k] = dummy_samp().gpuResourceID._impl;
+                        break;
+                    case NVN_RB_CBUF: case NVN_RB_C1: case NVN_RB_BORDER:
+                    case NVN_RB_DRV0: case NVN_RB_DRV2: case NVN_RB_PUSH:
+                    case NVN_RB_GMEML:
+                        slots[aid + k] = zero_bank_gpu();
+                        break;
+                    case NVN_RB_SBUFP: case NVN_RB_UBOP: case NVN_RB_SBUFU:
+                    case NVN_RB_GEOMETRY:
+                        slots[aid + k] = dummy_buf_gpu();
+                        break;
+                    case NVN_RB_SUPPORT:
+                        slots[aid + k] = support_gpu();
+                        break;
+                    case NVN_RB_GMEM:
+                        slots[aid + k] = raw_map ? raw_map.gpuAddress : zero_bank_gpu();
+                        break;
+                    default: {
+                        uint64_t d = dummy_tex_rid(b->dtt, b->dpf);
+                        if (!d) d = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
+                        slots[aid + k] = d;
+                        break;
+                    }
+                }
+            }
+        }
     }
 #endif
     id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab);
