@@ -670,7 +670,7 @@ void mtl_init(void) {
         if (!g_present_cb[i]) MDIE("failed to create present MTL4CommandBuffer[%d]", i);
     }
     MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-    atd.maxBufferBindCount = 31; atd.maxTextureBindCount = 1; atd.maxSamplerStateBindCount = 1;
+    atd.maxBufferBindCount = 31; atd.maxTextureBindCount = 1;
     NSError *ate = nil;
     g_vt = rec_table([g_dev newArgumentTableWithDescriptor:atd error:&ate]); if (!g_vt) MDIE("failed to create the vertex argument table: %s", ate.localizedDescription.UTF8String);
     g_vt_valid = 0;
@@ -9640,10 +9640,13 @@ static id<MTLBuffer> dummy_buf(void) {
     if (!b) {
         b = [g_dev newBufferWithLength:16 << 20 options:MTLResourceStorageModeShared];
         memset(b.contents, 0, b.length);
+        uint32_t n = (uint32_t)((b.length - DMSH_POOL_HEAD) / sizeof(uint64_t) - 1);
+        *(uint32_t *)b.contents = n;
         uint64_t *d = (uint64_t *)((uint8_t *)b.contents + DMSH_POOL_HEAD);
         uint64_t tr = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
-        uint64_t sr = dummy_samp().gpuResourceID._impl;
-        for (int k = 0; k < 1024; k += 2) {
+        uint64_t sr = dummy_samp_rid();
+        size_t total = (b.length - DMSH_POOL_HEAD) / sizeof(uint64_t);
+        for (size_t k = 0; k + 1 < total; k += 2) {
             d[k] = tr;
             d[k + 1] = sr;
         }
@@ -10543,10 +10546,10 @@ static void dummy_prewarm(void) {
         }
         uint64_t tr = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
         uint64_t sr = dummy_samp().gpuResourceID._impl;
-        if (real_vt) { [(id<MTL4ArgumentTable>)real_vt setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_vt setSamplerState:(MTLResourceID){sr} atIndex:0]; }
-        if (real_ft) { [(id<MTL4ArgumentTable>)real_ft setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_ft setSamplerState:(MTLResourceID){sr} atIndex:0]; }
-        if (real_ct) { [(id<MTL4ArgumentTable>)real_ct setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_ct setSamplerState:(MTLResourceID){sr} atIndex:0]; }
-        if (real_ot) { [(id<MTL4ArgumentTable>)real_ot setTexture:(MTLResourceID){tr} atIndex:0]; [(id<MTL4ArgumentTable>)real_ot setSamplerState:(MTLResourceID){sr} atIndex:0]; }
+        if (real_vt) { [(id<MTL4ArgumentTable>)real_vt setTexture:(MTLResourceID){tr} atIndex:0]; }
+        if (real_ft) { [(id<MTL4ArgumentTable>)real_ft setTexture:(MTLResourceID){tr} atIndex:0]; }
+        if (real_ct) { [(id<MTL4ArgumentTable>)real_ct setTexture:(MTLResourceID){tr} atIndex:0]; }
+        if (real_ot) { [(id<MTL4ArgumentTable>)real_ot setTexture:(MTLResourceID){tr} atIndex:0]; }
         if (g_present_args) {
             [(id<MTL4ArgumentTable>)g_present_args setAddress:dgpu atIndex:0];
             [(id<MTL4ArgumentTable>)g_present_args setTexture:(MTLResourceID){tr} atIndex:0];
