@@ -165,9 +165,9 @@ void dm_thread_service_connect(void) {
         pthread_mutex_unlock(&G);
         if (!waiting || now_ns() >= end) break;
         sched_yield();
-        usleep(250);
+        struct timespec ts = {0, 1000000}; nanosleep(&ts, 0);
     }
-    usleep(200);
+    struct timespec ts = {0, 1000000}; nanosleep(&ts, 0);
 }
 #define SERVICE_START_WAIT_NS 5000000
 #define SERVICE_ROUND_TRIP_NS 200000
@@ -185,7 +185,7 @@ void dm_thread_service_request(void) {
         if (atomic_load(&me->start_by->hand_epoch) != epoch) { back = 1; break; }
         pthread_mutex_unlock(&G);
         sched_yield();
-        { struct timespec ts = {0, 250000}; nanosleep(&ts, 0); }
+        { struct timespec ts = {0, 1000000}; nanosleep(&ts, 0); }
         pthread_mutex_lock(&G);
     }
     me->start_by = NULL; me->native_wait--;
@@ -227,12 +227,12 @@ int dm_yield_to_core_peers(int all) {
         pthread_mutex_unlock(&G);
         if (!busy) return waited;
         waited = 1;
-        if (++spins <= 4) {
+        if (++spins <= 2) {
             sched_yield();
-        } else if (spins <= 16) {
-            struct timespec ts = {0, 250000}; nanosleep(&ts, 0);
-        } else if (spins <= 64) {
+        } else if (spins <= 6) {
             struct timespec ts = {0, 1000000}; nanosleep(&ts, 0);
+        } else if (spins <= 10) {
+            struct timespec ts = {0, 2000000}; nanosleep(&ts, 0);
         } else {
             break;
         }

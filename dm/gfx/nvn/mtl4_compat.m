@@ -120,7 +120,8 @@ static inline DmCompatArgumentTable *unwrap_compat_table(id obj) {
     return nil;
 }
 
-static os_unfair_lock s_rid_lock = OS_UNFAIR_LOCK_INIT;
+static os_unfair_lock s_tex_lock = OS_UNFAIR_LOCK_INIT;
+static os_unfair_lock s_samp_lock = OS_UNFAIR_LOCK_INIT;
 static NSMapTable *s_rid_textures = nil;
 static NSMapTable *s_rid_samplers = nil;
 
@@ -128,35 +129,35 @@ void mtl_register_texture(id<MTLTexture> tex) {
     if (!tex) return;
     uint64_t rid = tex.gpuResourceID._impl;
     if (!rid) return;
-    os_unfair_lock_lock(&s_rid_lock);
+    os_unfair_lock_lock(&s_tex_lock);
     if (!s_rid_textures) s_rid_textures = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
     [s_rid_textures setObject:tex forKey:(__bridge id)(void *)(uintptr_t)rid];
-    os_unfair_lock_unlock(&s_rid_lock);
+    os_unfair_lock_unlock(&s_tex_lock);
 }
 
 void mtl_register_sampler(id<MTLSamplerState> samp) {
     if (!samp) return;
     uint64_t rid = samp.gpuResourceID._impl;
     if (!rid) return;
-    os_unfair_lock_lock(&s_rid_lock);
+    os_unfair_lock_lock(&s_samp_lock);
     if (!s_rid_samplers) s_rid_samplers = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
     [s_rid_samplers setObject:samp forKey:(__bridge id)(void *)(uintptr_t)rid];
-    os_unfair_lock_unlock(&s_rid_lock);
+    os_unfair_lock_unlock(&s_samp_lock);
 }
 
 id<MTLTexture> mtl_lookup_texture(uint64_t rid) {
     if (!rid) return nil;
-    os_unfair_lock_lock(&s_rid_lock);
+    os_unfair_lock_lock(&s_tex_lock);
     id<MTLTexture> tex = s_rid_textures ? [s_rid_textures objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
-    os_unfair_lock_unlock(&s_rid_lock);
+    os_unfair_lock_unlock(&s_tex_lock);
     return tex;
 }
 
 id<MTLSamplerState> mtl_lookup_sampler(uint64_t rid) {
     if (!rid) return nil;
-    os_unfair_lock_lock(&s_rid_lock);
+    os_unfair_lock_lock(&s_samp_lock);
     id<MTLSamplerState> samp = s_rid_samplers ? [s_rid_samplers objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
-    os_unfair_lock_unlock(&s_rid_lock);
+    os_unfair_lock_unlock(&s_samp_lock);
     return samp;
 }
 
@@ -210,15 +211,18 @@ static char kCompatCtKey;
 
 + (void)ensureArgsForEncoder:(id)encoder {
     if (!encoder) return;
-    DmCompatArgumentTable *vt = objc_getAssociatedObject(encoder, &kCompatVtKey);
-    DmCompatArgumentTable *ft = objc_getAssociatedObject(encoder, &kCompatFtKey);
-    DmCompatArgumentTable *ct = objc_getAssociatedObject(encoder, &kCompatCtKey);
-    if (!vt) vt = s_active_vt;
-    if (!ft) ft = s_active_ft;
-    if (!ct) ct = s_active_ct;
-    if (vt) [vt applyAllToEncoder:encoder];
-    if (ft) [ft applyAllToEncoder:encoder];
-    if (ct) [ct applyAllToEncoder:encoder];
+    if ([encoder respondsToSelector:@selector(setVertexTexture:atIndex:)]) {
+        DmCompatArgumentTable *vt = objc_getAssociatedObject(encoder, &kCompatVtKey);
+        DmCompatArgumentTable *ft = objc_getAssociatedObject(encoder, &kCompatFtKey);
+        if (!vt) vt = s_active_vt;
+        if (!ft) ft = s_active_ft;
+        if (vt) [vt applyAllToEncoder:encoder];
+        if (ft) [ft applyAllToEncoder:encoder];
+    } else {
+        DmCompatArgumentTable *ct = objc_getAssociatedObject(encoder, &kCompatCtKey);
+        if (!ct) ct = s_active_ct;
+        if (ct) [ct applyAllToEncoder:encoder];
+    }
 }
 
 + (void)notifyEncoderEnded:(id)encoder {
@@ -240,7 +244,10 @@ static char kCompatCtKey;
     id<MTLBuffer> buf = (_valid_mask & (1u << index)) && _buffers[index] ? _buffers[index] : mtl_dummy_buf();
     NSUInteger off = (_valid_mask & (1u << index)) && _buffers[index] ? _offsets[index] : 0;
     if (!buf) buf = mtl_dummy_buf();
-    if (buf && (off >= buf.length || off + 16 > buf.length)) off = 0;
+    if (buf) {
+        if (off >= buf.length) off = 0;
+        off &= ~3u;
+    }
     if (_is_compute) {
         if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
             [(id<MTLComputeCommandEncoder>)enc setBuffer:buf offset:off atIndex:index];
@@ -303,7 +310,8 @@ static char kCompatCtKey;
         NSUInteger off = (_valid_mask & (1u << i)) && _buffers[i] ? _offsets[i] : 0;
         if (!buf) buf = d;
         if (buf) {
-            if (off >= buf.length || off + 16 > buf.length) off = 0;
+            if (off >= buf.length) off = 0;
+            off &= ~3u;
             if (_is_compute) {
                 if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
                     [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
@@ -362,9 +370,9 @@ static char kCompatCtKey;
         uint64_t off = 0;
         if (mtl_addr(address, 1, &b, &off) && b) {
             id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)b;
-            if (off + 16 <= mbuf.length) {
+            if (off < mbuf.length) {
                 _buffers[index] = mbuf;
-                _offsets[index] = (NSUInteger)off;
+                _offsets[index] = (NSUInteger)(off & ~3u);
                 _valid_mask |= (1u << index);
             } else {
                 id<MTLBuffer> d = mtl_dummy_buf();
@@ -377,10 +385,6 @@ static char kCompatCtKey;
             _buffers[index] = d;
             _offsets[index] = 0;
             _valid_mask |= (1u << index);
-            static int n_fail = 0;
-            if (n_fail++ < 30) {
-                NSLog(@"[RED] DmCompatArgumentTable: unresolved GPU addr 0x%llx at index %lu, fallback to dummy_buf", (unsigned long long)address, (unsigned long)index);
-            }
         }
     } else {
         id<MTLBuffer> d = mtl_dummy_buf();
@@ -393,7 +397,13 @@ static char kCompatCtKey;
 
 - (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index {
     if (index >= 32) return;
-    id<MTLTexture> tex = mtl_lookup_texture(texture._impl);
+    id<MTLTexture> tex = nil;
+    if (texture._impl) {
+        tex = mtl_lookup_texture(texture._impl);
+        if (!tex && [(__bridge id)(void *)(uintptr_t)texture._impl conformsToProtocol:@protocol(MTLTexture)]) {
+            tex = (__bridge id<MTLTexture>)(void *)(uintptr_t)texture._impl;
+        }
+    }
     if (!tex) tex = mtl_dummy_tex(0, 0);
     _textures[index] = tex;
     _texture_valid_mask |= (1u << index);
@@ -402,7 +412,13 @@ static char kCompatCtKey;
 
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index {
     if (index >= 32) return;
-    id<MTLSamplerState> samp = mtl_lookup_sampler(sampler._impl);
+    id<MTLSamplerState> samp = nil;
+    if (sampler._impl) {
+        samp = mtl_lookup_sampler(sampler._impl);
+        if (!samp && [(__bridge id)(void *)(uintptr_t)sampler._impl conformsToProtocol:@protocol(MTLSamplerState)]) {
+            samp = (__bridge id<MTLSamplerState>)(void *)(uintptr_t)sampler._impl;
+        }
+    }
     if (!samp) samp = mtl_dummy_samp();
     _samplers[index] = samp;
     _sampler_valid_mask |= (1u << index);
@@ -611,40 +627,6 @@ static char kFenceKey;
 - (void)setArgumentTable:(id)table atStages:(MTLRenderStages)stages {
     DmCompatArgumentTable *t = unwrap_compat_table(table);
     if (t) [t bindToRenderEncoder:self stages:stages];
-}
-- (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index {
-    if (!address) return;
-    void *b = NULL;
-    uint64_t off = 0;
-    if (mtl_addr(address, 1, &b, &off) && b) {
-        id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)b;
-        if (off + 16 > mbuf.length) off = 0;
-        if ([self respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
-            [(id<MTLComputeCommandEncoder>)self setBuffer:mbuf offset:off atIndex:index];
-        } else if ([self respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
-            [(id<MTLRenderCommandEncoder>)self setFragmentBuffer:mbuf offset:off atIndex:index];
-        }
-    }
-}
-- (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index {
-    id<MTLTexture> tex = mtl_lookup_texture(texture._impl);
-    if (!tex) tex = mtl_dummy_tex(0, 0);
-    if (!tex) return;
-    if ([self respondsToSelector:@selector(setTexture:atIndex:)]) {
-        [(id<MTLComputeCommandEncoder>)self setTexture:tex atIndex:index];
-    } else if ([self respondsToSelector:@selector(setFragmentTexture:atIndex:)]) {
-        [(id<MTLRenderCommandEncoder>)self setFragmentTexture:tex atIndex:index];
-    }
-}
-- (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index {
-    id<MTLSamplerState> samp = mtl_lookup_sampler(sampler._impl);
-    if (!samp) samp = mtl_dummy_samp();
-    if (!samp) return;
-    if ([self respondsToSelector:@selector(setSamplerState:atIndex:)]) {
-        [(id<MTLComputeCommandEncoder>)self setSamplerState:samp atIndex:index];
-    } else if ([self respondsToSelector:@selector(setFragmentSamplerState:atIndex:)]) {
-        [(id<MTLRenderCommandEncoder>)self setFragmentSamplerState:samp atIndex:index];
-    }
 }
 - (void)commit:(id const *)buffers count:(NSUInteger)count options:(id)options {
     NSArray *handlers = nil;

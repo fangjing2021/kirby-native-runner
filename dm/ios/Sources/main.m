@@ -289,5 +289,6 @@ static void disable_ios_wakemon(void) {
 int main(int argc, char **argv) {
     disable_ios_wakemon();
     @autoreleasepool { g_boot_ok = boot_env(); }
+    disable_ios_wakemon();
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(App.class)); }
 }
