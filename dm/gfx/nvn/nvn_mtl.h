@@ -25,10 +25,12 @@ int mtl_addr_known(uint64_t addr, uint64_t len);   // 1 when the range lies in o
 #if defined(__OBJC__)
 @protocol MTLBuffer;
 @protocol MTLSamplerState;
+@protocol MTLTexture;
 id<MTLBuffer> mtl_dummy_buf(void);
 uint64_t mtl_dummy_buf_gpu(void);
 uint64_t mtl_dummy_tex_rid(int dtt, int dpf);
 id<MTLSamplerState> mtl_dummy_samp(void);
+id<MTLTexture> mtl_dummy_tex(int dtt, int dpf);
 #endif
 
 typedef struct {

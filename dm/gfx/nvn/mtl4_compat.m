@@ -120,6 +120,46 @@ static inline DmCompatArgumentTable *unwrap_compat_table(id obj) {
     return nil;
 }
 
+static os_unfair_lock s_rid_lock = OS_UNFAIR_LOCK_INIT;
+static NSMapTable *s_rid_textures = nil;
+static NSMapTable *s_rid_samplers = nil;
+
+void mtl_register_texture(id<MTLTexture> tex) {
+    if (!tex) return;
+    uint64_t rid = tex.gpuResourceID._impl;
+    if (!rid) return;
+    os_unfair_lock_lock(&s_rid_lock);
+    if (!s_rid_textures) s_rid_textures = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
+    [s_rid_textures setObject:tex forKey:(__bridge id)(void *)(uintptr_t)rid];
+    os_unfair_lock_unlock(&s_rid_lock);
+}
+
+void mtl_register_sampler(id<MTLSamplerState> samp) {
+    if (!samp) return;
+    uint64_t rid = samp.gpuResourceID._impl;
+    if (!rid) return;
+    os_unfair_lock_lock(&s_rid_lock);
+    if (!s_rid_samplers) s_rid_samplers = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
+    [s_rid_samplers setObject:samp forKey:(__bridge id)(void *)(uintptr_t)rid];
+    os_unfair_lock_unlock(&s_rid_lock);
+}
+
+id<MTLTexture> mtl_lookup_texture(uint64_t rid) {
+    if (!rid) return nil;
+    os_unfair_lock_lock(&s_rid_lock);
+    id<MTLTexture> tex = s_rid_textures ? [s_rid_textures objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
+    os_unfair_lock_unlock(&s_rid_lock);
+    return tex;
+}
+
+id<MTLSamplerState> mtl_lookup_sampler(uint64_t rid) {
+    if (!rid) return nil;
+    os_unfair_lock_lock(&s_rid_lock);
+    id<MTLSamplerState> samp = s_rid_samplers ? [s_rid_samplers objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
+    os_unfair_lock_unlock(&s_rid_lock);
+    return samp;
+}
+
 static __unsafe_unretained DmCompatArgumentTable *s_all_tables[64];
 static int s_all_tables_count = 0;
 static os_unfair_lock s_tables_lock = OS_UNFAIR_LOCK_INIT;
@@ -133,6 +173,10 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
     id<MTLBuffer> _buffers[32];
     NSUInteger _offsets[32];
     uint32_t _valid_mask;
+    id<MTLTexture> _textures[32];
+    uint32_t _texture_valid_mask;
+    id<MTLSamplerState> _samplers[32];
+    uint32_t _sampler_valid_mask;
     __unsafe_unretained id _encoder;
     MTLRenderStages _render_stages;
     BOOL _is_compute;
@@ -196,7 +240,7 @@ static char kCompatCtKey;
     id<MTLBuffer> buf = (_valid_mask & (1u << index)) && _buffers[index] ? _buffers[index] : mtl_dummy_buf();
     NSUInteger off = (_valid_mask & (1u << index)) && _buffers[index] ? _offsets[index] : 0;
     if (!buf) buf = mtl_dummy_buf();
-    if (buf && off >= buf.length) off = 0;
+    if (buf && (off >= buf.length || off + 16 > buf.length)) off = 0;
     if (_is_compute) {
         if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
             [(id<MTLComputeCommandEncoder>)enc setBuffer:buf offset:off atIndex:index];
@@ -211,6 +255,46 @@ static char kCompatCtKey;
     }
 }
 
+- (void)applyTextureToIndex:(NSUInteger)index {
+    if (index >= 32) return;
+    id enc = _encoder;
+    if (!enc) return;
+    id<MTLTexture> tex = (_texture_valid_mask & (1u << index)) && _textures[index] ? _textures[index] : mtl_dummy_tex(0, 0);
+    if (!tex) return;
+    if (_is_compute) {
+        if ([enc respondsToSelector:@selector(setTexture:atIndex:)]) {
+            [(id<MTLComputeCommandEncoder>)enc setTexture:tex atIndex:index];
+        }
+    } else {
+        if ((_render_stages & MTLRenderStageVertex) && [enc respondsToSelector:@selector(setVertexTexture:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)enc setVertexTexture:tex atIndex:index];
+        }
+        if ((_render_stages & MTLRenderStageFragment) && [enc respondsToSelector:@selector(setFragmentTexture:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)enc setFragmentTexture:tex atIndex:index];
+        }
+    }
+}
+
+- (void)applySamplerToIndex:(NSUInteger)index {
+    if (index >= 32) return;
+    id enc = _encoder;
+    if (!enc) return;
+    id<MTLSamplerState> samp = (_sampler_valid_mask & (1u << index)) && _samplers[index] ? _samplers[index] : mtl_dummy_samp();
+    if (!samp) return;
+    if (_is_compute) {
+        if ([enc respondsToSelector:@selector(setSamplerState:atIndex:)]) {
+            [(id<MTLComputeCommandEncoder>)enc setSamplerState:samp atIndex:index];
+        }
+    } else {
+        if ((_render_stages & MTLRenderStageVertex) && [enc respondsToSelector:@selector(setVertexSamplerState:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)enc setVertexSamplerState:samp atIndex:index];
+        }
+        if ((_render_stages & MTLRenderStageFragment) && [enc respondsToSelector:@selector(setFragmentSamplerState:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)enc setFragmentSamplerState:samp atIndex:index];
+        }
+    }
+}
+
 - (void)applyAllToEncoder:(id)encoder {
     if (!encoder) return;
     id<MTLBuffer> d = mtl_dummy_buf();
@@ -219,7 +303,7 @@ static char kCompatCtKey;
         NSUInteger off = (_valid_mask & (1u << i)) && _buffers[i] ? _offsets[i] : 0;
         if (!buf) buf = d;
         if (buf) {
-            if (off >= buf.length) off = 0;
+            if (off >= buf.length || off + 16 > buf.length) off = 0;
             if (_is_compute) {
                 if ([encoder respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
                     [(id<MTLComputeCommandEncoder>)encoder setBuffer:buf offset:off atIndex:i];
@@ -230,6 +314,40 @@ static char kCompatCtKey;
                 }
                 if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
                     [(id<MTLRenderCommandEncoder>)encoder setFragmentBuffer:buf offset:off atIndex:i];
+                }
+            }
+        }
+        if (_texture_valid_mask & (1u << i)) {
+            id<MTLTexture> tex = _textures[i] ? _textures[i] : mtl_dummy_tex(0, 0);
+            if (tex) {
+                if (_is_compute) {
+                    if ([encoder respondsToSelector:@selector(setTexture:atIndex:)]) {
+                        [(id<MTLComputeCommandEncoder>)encoder setTexture:tex atIndex:i];
+                    }
+                } else {
+                    if ((_render_stages & MTLRenderStageVertex) && [encoder respondsToSelector:@selector(setVertexTexture:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setVertexTexture:tex atIndex:i];
+                    }
+                    if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentTexture:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setFragmentTexture:tex atIndex:i];
+                    }
+                }
+            }
+        }
+        if (_sampler_valid_mask & (1u << i)) {
+            id<MTLSamplerState> samp = _samplers[i] ? _samplers[i] : mtl_dummy_samp();
+            if (samp) {
+                if (_is_compute) {
+                    if ([encoder respondsToSelector:@selector(setSamplerState:atIndex:)]) {
+                        [(id<MTLComputeCommandEncoder>)encoder setSamplerState:samp atIndex:i];
+                    }
+                } else {
+                    if ((_render_stages & MTLRenderStageVertex) && [encoder respondsToSelector:@selector(setVertexSamplerState:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setVertexSamplerState:samp atIndex:i];
+                    }
+                    if ((_render_stages & MTLRenderStageFragment) && [encoder respondsToSelector:@selector(setFragmentSamplerState:atIndex:)]) {
+                        [(id<MTLRenderCommandEncoder>)encoder setFragmentSamplerState:samp atIndex:i];
+                    }
                 }
             }
         }
@@ -244,7 +362,7 @@ static char kCompatCtKey;
         uint64_t off = 0;
         if (mtl_addr(address, 1, &b, &off) && b) {
             id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)b;
-            if (off < mbuf.length) {
+            if (off + 16 <= mbuf.length) {
                 _buffers[index] = mbuf;
                 _offsets[index] = (NSUInteger)off;
                 _valid_mask |= (1u << index);
@@ -273,8 +391,23 @@ static char kCompatCtKey;
     [self applyToIndex:index];
 }
 
-- (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index { (void)texture; (void)index; }
-- (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index { (void)sampler; (void)index; }
+- (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index {
+    if (index >= 32) return;
+    id<MTLTexture> tex = mtl_lookup_texture(texture._impl);
+    if (!tex) tex = mtl_dummy_tex(0, 0);
+    _textures[index] = tex;
+    _texture_valid_mask |= (1u << index);
+    [self applyTextureToIndex:index];
+}
+
+- (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index {
+    if (index >= 32) return;
+    id<MTLSamplerState> samp = mtl_lookup_sampler(sampler._impl);
+    if (!samp) samp = mtl_dummy_samp();
+    _samplers[index] = samp;
+    _sampler_valid_mask |= (1u << index);
+    [self applySamplerToIndex:index];
+}
 
 - (void)bindToRenderEncoder:(id)encoder stages:(MTLRenderStages)stages {
     _encoder = encoder;
@@ -479,9 +612,40 @@ static char kFenceKey;
     DmCompatArgumentTable *t = unwrap_compat_table(table);
     if (t) [t bindToRenderEncoder:self stages:stages];
 }
-- (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index { (void)address; (void)index; }
-- (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index { (void)texture; (void)index; }
-- (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index { (void)sampler; (void)index; }
+- (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index {
+    if (!address) return;
+    void *b = NULL;
+    uint64_t off = 0;
+    if (mtl_addr(address, 1, &b, &off) && b) {
+        id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)b;
+        if (off + 16 > mbuf.length) off = 0;
+        if ([self respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+            [(id<MTLComputeCommandEncoder>)self setBuffer:mbuf offset:off atIndex:index];
+        } else if ([self respondsToSelector:@selector(setFragmentBuffer:offset:atIndex:)]) {
+            [(id<MTLRenderCommandEncoder>)self setFragmentBuffer:mbuf offset:off atIndex:index];
+        }
+    }
+}
+- (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index {
+    id<MTLTexture> tex = mtl_lookup_texture(texture._impl);
+    if (!tex) tex = mtl_dummy_tex(0, 0);
+    if (!tex) return;
+    if ([self respondsToSelector:@selector(setTexture:atIndex:)]) {
+        [(id<MTLComputeCommandEncoder>)self setTexture:tex atIndex:index];
+    } else if ([self respondsToSelector:@selector(setFragmentTexture:atIndex:)]) {
+        [(id<MTLRenderCommandEncoder>)self setFragmentTexture:tex atIndex:index];
+    }
+}
+- (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index {
+    id<MTLSamplerState> samp = mtl_lookup_sampler(sampler._impl);
+    if (!samp) samp = mtl_dummy_samp();
+    if (!samp) return;
+    if ([self respondsToSelector:@selector(setSamplerState:atIndex:)]) {
+        [(id<MTLComputeCommandEncoder>)self setSamplerState:samp atIndex:index];
+    } else if ([self respondsToSelector:@selector(setFragmentSamplerState:atIndex:)]) {
+        [(id<MTLRenderCommandEncoder>)self setFragmentSamplerState:samp atIndex:index];
+    }
+}
 - (void)commit:(id const *)buffers count:(NSUInteger)count options:(id)options {
     NSArray *handlers = nil;
     if ([options isKindOfClass:[MTL4CommitOptions class]]) {

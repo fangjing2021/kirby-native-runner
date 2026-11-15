@@ -40,6 +40,18 @@ int nvn_deswz_gpu_direct_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTa
     memcpy((uint8_t*)params.contents+params_off,&p,sizeof p);
     [enc setArgumentTable:table];[enc setComputePipelineState:g_nvn_deswz_direct];
     [table setAddress:src.gpuAddress atIndex:0];[table setAddress:params.gpuAddress+params_off atIndex:2];[table setTexture:view.gpuResourceID atIndex:0];
+    if ([enc respondsToSelector:@selector(setTexture:atIndex:)]) {
+        [(id<MTLComputeCommandEncoder>)enc setTexture:view atIndex:0];
+    }
+    if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+        [(id<MTLComputeCommandEncoder>)enc setBuffer:src offset:0 atIndex:0];
+        [(id<MTLComputeCommandEncoder>)enc setBuffer:params offset:params_off atIndex:2];
+    }
+    if ([enc respondsToSelector:@selector(useResource:usage:)]) {
+        [(id<MTLComputeCommandEncoder>)enc useResource:view usage:MTLResourceUsageWrite];
+        [(id<MTLComputeCommandEncoder>)enc useResource:src usage:MTLResourceUsageRead];
+        [(id<MTLComputeCommandEncoder>)enc useResource:params usage:MTLResourceUsageRead];
+    }
     [enc dispatchThreadgroups:MTLSizeMake((p.width+7)/8,(p.height+3)/4,p.layers) threadsPerThreadgroup:MTLSizeMake(8,4,1)];
     return 0;
 }
@@ -83,6 +95,16 @@ int nvn_deswz_gpu_encode_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTa
     [table setAddress:src.gpuAddress atIndex:0];
     [table setAddress:dst.gpuAddress atIndex:1];
     [table setAddress:params.gpuAddress + params_off atIndex:2];
+    if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+        [(id<MTLComputeCommandEncoder>)enc setBuffer:src offset:0 atIndex:0];
+        [(id<MTLComputeCommandEncoder>)enc setBuffer:dst offset:0 atIndex:1];
+        [(id<MTLComputeCommandEncoder>)enc setBuffer:params offset:params_off atIndex:2];
+    }
+    if ([enc respondsToSelector:@selector(useResource:usage:)]) {
+        [(id<MTLComputeCommandEncoder>)enc useResource:src usage:MTLResourceUsageRead];
+        [(id<MTLComputeCommandEncoder>)enc useResource:dst usage:MTLResourceUsageWrite];
+        [(id<MTLComputeCommandEncoder>)enc useResource:params usage:MTLResourceUsageRead];
+    }
     NSUInteger gobs_x = (row_bytes + 63u) >> 6;
     NSUInteger gobs_y = (rows + 7u) >> 3;
     [enc dispatchThreadgroups:MTLSizeMake(gobs_x, gobs_y, slices) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];

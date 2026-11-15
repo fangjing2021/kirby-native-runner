@@ -33,6 +33,13 @@ typedef uint64_t MTLGPUAddress;
 - (void)setLabel:(NSString *)label;
 @end
 
+@protocol MTLTexture;
+@protocol MTLSamplerState;
+void mtl_register_texture(id<MTLTexture> tex);
+void mtl_register_sampler(id<MTLSamplerState> samp);
+id<MTLTexture> mtl_lookup_texture(uint64_t rid);
+id<MTLSamplerState> mtl_lookup_sampler(uint64_t rid);
+
 @protocol MTL4ArgumentTable <NSObject>
 - (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index;
 - (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index;
@@ -46,6 +53,8 @@ typedef uint64_t MTLGPUAddress;
 - (void)bindToRenderEncoder:(id)encoder stages:(MTLRenderStages)stages;
 - (void)bindToComputeEncoder:(id)encoder;
 - (void)applyToIndex:(NSUInteger)index;
+- (void)applyTextureToIndex:(NSUInteger)index;
+- (void)applySamplerToIndex:(NSUInteger)index;
 - (void)applyAllToEncoder:(id)encoder;
 + (void)notifyEncoderEnded:(id)encoder;
 + (void)ensureArgsForEncoder:(id)encoder;
