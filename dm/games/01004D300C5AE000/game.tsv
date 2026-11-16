@@ -37,3 +37,10 @@ sys_resource	0x0
 # ---- Shader split (shader_split.py; BNSH in HAL's .cmp containers, the loose shader/ files and main) ----
 shader_groups	/gfx/=gfx /ptcl/=ptcl /lyt/=lyt /shader/=shader
 shader_note	Kirby and the Forgotten Land shaders
+
+# ---- Frame rate ----
+# HAL Laboratory engine interval unlock at [main+0xa76728]+0x50; present pacing follows the 60 Hz display link
+fps_target	60
+fps_max	60
+present_interval	display
+

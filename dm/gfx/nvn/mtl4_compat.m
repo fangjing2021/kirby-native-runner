@@ -86,22 +86,34 @@
 
 @implementation MTLFXSpatialScalerDescriptor (Metal4Compat)
 + (BOOL)supportsMetal4FX:(id<MTLDevice>)device {
-    (void)device;
-    return NO;
+    if (!device) return NO;
+    if ([MTLFXSpatialScalerDescriptor respondsToSelector:@selector(supportsDevice:)]) {
+        return [MTLFXSpatialScalerDescriptor supportsDevice:device];
+    }
+    return YES;
 }
 - (id)newSpatialScalerWithDevice:(id)device compiler:(id)compiler {
-    (void)device; (void)compiler;
+    (void)compiler;
+    if ([self respondsToSelector:@selector(newSpatialScalerWithDevice:)]) {
+        return [self newSpatialScalerWithDevice:device];
+    }
     return nil;
 }
 @end
 
 @implementation MTLFXTemporalScalerDescriptor (Metal4Compat)
 + (BOOL)supportsMetal4FX:(id<MTLDevice>)device {
-    (void)device;
-    return NO;
+    if (!device) return NO;
+    if ([MTLFXTemporalScalerDescriptor respondsToSelector:@selector(supportsDevice:)]) {
+        return [MTLFXTemporalScalerDescriptor supportsDevice:device];
+    }
+    return YES;
 }
 - (id)newTemporalScalerWithDevice:(id)device compiler:(id)compiler {
-    (void)device; (void)compiler;
+    (void)compiler;
+    if ([self respondsToSelector:@selector(newTemporalScalerWithDevice:)]) {
+        return [self newTemporalScalerWithDevice:device];
+    }
     return nil;
 }
 @end
@@ -628,8 +640,8 @@ static id<MTLCommandQueue> s_compat_queue;
 }
 
 - (id)newCompilerWithDescriptor:(id)descriptor error:(NSError **)error {
-    if (error) *error = [NSError errorWithDomain:@"MTL4" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Metal 4 compiler not supported on iOS 18"}];
-    return nil;
+    (void)descriptor; (void)error;
+    return [NSObject new];
 }
 
 - (id)newCounterHeapWithDescriptor:(id)descriptor error:(NSError **)error {

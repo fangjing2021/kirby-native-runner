@@ -1452,7 +1452,7 @@ static inline void m4_end(id e) {
     gp_end(e);
     static int end_alias = -1; if (end_alias < 0) end_alias = sw_mode("DM_NVN_END_ALIAS", 0);
     MTL4VisibilityOptions vis = e == g_blit && g_blit_alias ? blit_vis() : end_alias && sw_on(end_alias) ? resource_vis() : MTL4VisibilityOptionDevice; if (e == g_blit) g_blit_alias = 0;
-    if ([e conformsToProtocol:@protocol(MTL4CommandEncoder)]) [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:vis];
+    if ([e respondsToSelector:@selector(barrierAfterStages:beforeQueueStages:visibilityOptions:)]) [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:vis];
     [DmCompatArgumentTable notifyEncoderEnded:e];
     [e endEncoding]; g_last_end_relaxed = 0; cm_enc_mark(-1);
 }
@@ -15586,6 +15586,18 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (!kind) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
     int fx_kind = kind == PRESENT_METALFX;
     [cb endCommandBuffer];
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    uint64_t pn = ticket;
+    [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
+        CFTimeInterval tt = d.presentedTime;
+        g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
+    }];
+    if ([cb respondsToSelector:@selector(presentDrawable:afterMinimumDuration:)] && period > 0 && target_ts <= 0) {
+        [(id<MTLCommandBuffer>)cb presentDrawable:dr afterMinimumDuration:period];
+    } else if ([cb respondsToSelector:@selector(presentDrawable:)]) {
+        [(id<MTLCommandBuffer>)cb presentDrawable:dr];
+    }
+#endif
     MTL4CommitOptions *o = [MTL4CommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) { MLOG("[RED] display command buffer error: %s", f.error.description.UTF8String); gpu_lost_check(f.error, "display"); }
@@ -15614,7 +15626,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     g_present_alloc_fence[alloc_i] = ticket;
 #if TARGET_OS_SIMULATOR   // The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)
     (void)period; [dr present];
-#else
+#elif !TARGET_OS_IPHONE
     uint64_t pn = ticket;   // Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
     [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
         CFTimeInterval tt = d.presentedTime;
