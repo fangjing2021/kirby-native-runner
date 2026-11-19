@@ -15486,8 +15486,10 @@ static int present_encode_m4_slot(id<MTL4CommandBuffer> cb, id<MTLTexture> src, 
     if (!en) { MLOG("[RED] failed to create the M4 present render encoder"); return 0; }
     [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()];
     int slot_i = (slot >= 0 && slot < 3) ? slot : 0;
-    if (up && fx && fx->fence[slot_i] && [en respondsToSelector:@selector(waitForFence:)]) {
-        [en waitForFence:fx->fence[slot_i]];
+    if (up && fx && fx->fence[slot_i]) {
+        if ([en respondsToSelector:@selector(waitForFence:beforeStages:)]) {
+            [(id<MTLRenderCommandEncoder>)en waitForFence:fx->fence[slot_i] beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+        }
     }
     [en setArgumentTable:g_present_args atStages:MTLRenderStageFragment];
     [g_present_args setTexture:tex.gpuResourceID atIndex:0];
