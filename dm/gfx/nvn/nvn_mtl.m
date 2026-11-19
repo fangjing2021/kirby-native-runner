@@ -6445,6 +6445,7 @@ static inline uint64_t dummy_tex_rid(int dtt, int dpf) {
 // face. A cube read as 2D is face 0, as a non-array access of a 2D array is layer 0 (Atelier Ryza DX leaves cube textures in slots that its draws read as 2D, a different texture from run to run).
 // A Metal cube's arrayLength is 1 and a cube array's counts cubes
 static NSUInteger fit_layers(id<MTLTexture> t, MTLTextureType want) {
+    if (want == MTLTextureType3D) return t.textureType == MTLTextureType3D ? 1 : 0;
     MTLTextureType have = t.textureType;
     NSUInteger layers = have == MTLTextureType2D ? 1 : have == MTLTextureType2DArray ? t.arrayLength : have == MTLTextureTypeCube || have == MTLTextureTypeCubeArray ? t.arrayLength * 6 : 0;
     if (!layers) return 0;
@@ -9878,6 +9879,10 @@ static id<MTLBuffer> support_buf(void) {
     b = [g_dev newBufferWithLength:65536 options:MTLResourceStorageModeShared];
     memset(b.contents, 0, b.length);
     res_add(b); res_commit();
+    float *vpinv = (float *)((uint8_t *)b.contents + 144);
+    float *vpsz = (float *)((uint8_t *)b.contents + 160);
+    vpinv[0] = 1.0f / 1632.0f; vpinv[1] = 1.0f / 918.0f; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
+    vpsz[0] = 1632.0f; vpsz[1] = 918.0f; vpsz[2] = 1.0f; vpsz[3] = 1.0f;
     const int render_scale_off = 192;   // Measured MSL layout: alpha_test 0, is_bgra[8] 16, viewport_inverse 144, viewport_size 160, frag_scale_count 176, render_scale float4[73] 192 (take .x)
     for (int i = 0; i < 73; i++) *(float *)((uint8_t *)b.contents + render_scale_off + 16 * i) = 1.0f;
     return b;
@@ -10446,9 +10451,20 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             slots[aid] = b->kind == NVN_RB_GMEM ? raw_map.gpuAddress : gml_take(raw_map);
             if (b->kind == NVN_RB_GMEM) gmem_aid = aid; else gml_taken = 1;
             if (bl && b->kind == NVN_RB_GMEM) PD("B %llu st%d gmem %s", g_stat_pass, nvn_stage, b->rw ? "rw" : "ro");
-        } else if (b->kind == NVN_RB_SUPPORT) {   // support_buffer: scale 1.0, BGRA swap 0, viewport transform not disabled (viewport fields are not read)
-            slots[aid] = support_gpu();
-            USE(support_buf(), MTLResourceUsageRead);
+        } else if (b->kind == NVN_RB_SUPPORT) {   // support_buffer: scale 1.0, BGRA swap 0, active viewport
+            float vw = S.vp[0][2] > 0.0f ? S.vp[0][2] : 1632.0f;
+            float vh = S.vp[0][3] > 0.0f ? S.vp[0][3] : 918.0f;
+            id<MTLBuffer> ab; size_t ao = arena_alloc(2048, &ab);
+            uint8_t *p = (uint8_t *)ab.contents + ao;
+            memset(p, 0, 2048);
+            float *vpinv = (float *)(p + 144);
+            float *vpsz = (float *)(p + 160);
+            vpinv[0] = 1.0f / vw; vpinv[1] = 1.0f / vh; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
+            vpsz[0] = vw; vpsz[1] = vh; vpsz[2] = 1.0f; vpsz[3] = 1.0f;
+            const int render_scale_off = 192;
+            for (int i = 0; i < 73; i++) *(float *)(p + render_scale_off + 16 * i) = 1.0f;
+            slots[aid] = ab.gpuAddress + ao;
+            USE(ab, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_PUSH) {   // NVN2 push constants (c[24]): the stage group's current block
             id<MTLBuffer> db; size_t doff = arena_alloc(DMSH_PUSH_SIZE, &db);
             memcpy(g_cur_arena->cpu + doff, S.push[nvn_stage == 5 ? 1 : 0], DMSH_PUSH_SIZE);
@@ -10622,20 +10638,16 @@ static void dummy_prewarm(void) {
         id real_ct = rec_table_real(g_ct);
         id real_ot = rec_table_real(g_ot);
         id real_up_ct = rec_table_real(g_up_ct);
-        for (NSUInteger k = 0; k < 31; k++) {
-            if (real_vt) [(id<MTL4ArgumentTable>)real_vt setAddress:dgpu atIndex:k];
-            if (real_ft) [(id<MTL4ArgumentTable>)real_ft setAddress:dgpu atIndex:k];
-            if (real_ct) [(id<MTL4ArgumentTable>)real_ct setAddress:dgpu atIndex:k];
-            if (real_ot) [(id<MTL4ArgumentTable>)real_ot setAddress:dgpu atIndex:k];
+        uint64_t tr = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
+        uint64_t sr = dummy_samp().gpuResourceID._impl;
+        for (NSUInteger k = 0; k < 32; k++) {
+            if (real_vt) { [(id<MTL4ArgumentTable>)real_vt setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_vt setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_vt setSamplerState:(MTLResourceID){sr} atIndex:k]; }
+            if (real_ft) { [(id<MTL4ArgumentTable>)real_ft setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_ft setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_ft setSamplerState:(MTLResourceID){sr} atIndex:k]; }
+            if (real_ct) { [(id<MTL4ArgumentTable>)real_ct setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_ct setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_ct setSamplerState:(MTLResourceID){sr} atIndex:k]; }
+            if (real_ot) { [(id<MTL4ArgumentTable>)real_ot setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_ot setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_ot setSamplerState:(MTLResourceID){sr} atIndex:k]; }
             if (real_up_ct) [(id<MTL4ArgumentTable>)real_up_ct setAddress:dgpu atIndex:k];
             g_vt_addr[k] = dgpu;
         }
-        uint64_t tr = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
-        uint64_t sr = dummy_samp().gpuResourceID._impl;
-        if (real_vt) { [(id<MTL4ArgumentTable>)real_vt setTexture:(MTLResourceID){tr} atIndex:0]; }
-        if (real_ft) { [(id<MTL4ArgumentTable>)real_ft setTexture:(MTLResourceID){tr} atIndex:0]; }
-        if (real_ct) { [(id<MTL4ArgumentTable>)real_ct setTexture:(MTLResourceID){tr} atIndex:0]; }
-        if (real_ot) { [(id<MTL4ArgumentTable>)real_ot setTexture:(MTLResourceID){tr} atIndex:0]; }
         if (g_present_args) {
             [(id<MTL4ArgumentTable>)g_present_args setAddress:dgpu atIndex:0];
             [(id<MTL4ArgumentTable>)g_present_args setTexture:(MTLResourceID){tr} atIndex:0];

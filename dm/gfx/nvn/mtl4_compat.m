@@ -200,6 +200,21 @@ static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 
 - (instancetype)init {
     if ((self = [super init])) {
+        id<MTLBuffer> db = mtl_dummy_buf();
+        id<MTLTexture> dt = mtl_dummy_tex(0, 0);
+        id<MTLSamplerState> ds = mtl_dummy_samp();
+        for (int i = 0; i < 32; i++) {
+            _buffers[i] = db;
+            _offsets[i] = 0;
+            _textures[i] = dt;
+            _samplers[i] = ds;
+        }
+        _valid_mask = 0xffffffffu;
+        _texture_valid_mask = 0xffffffffu;
+        _sampler_valid_mask = 0xffffffffu;
+        _dirty_mask = 0xffffffffu;
+        _texture_dirty_mask = 0xffffffffu;
+        _sampler_dirty_mask = 0xffffffffu;
         os_unfair_lock_lock(&s_tables_lock);
         if (s_all_tables_count < 64) {
             s_all_tables[s_all_tables_count++] = self;
@@ -524,9 +539,9 @@ static char kCompatCtKey;
             _valid_mask |= (1u << index);
         }
     } else {
-        _buffers[index] = nil;
+        _buffers[index] = mtl_dummy_buf();
         _offsets[index] = 0;
-        _valid_mask &= ~(1u << index);
+        _valid_mask |= (1u << index);
     }
     [self applyToIndex:index];
 }

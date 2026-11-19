@@ -117,6 +117,10 @@ static void check(int which) {
         g_mod[0].fps_target_ptr = 0x21e60d8; g_mod[0].fps_target_field = 0x1dc;
         *(uintptr_t *)(base + 0x21e60d8) = (uintptr_t)object;
         *(int32_t *)(object + 0x1dc) = which == 17 ? 30 : 60;
+    } else if (which == 30) {
+        strcpy(g_mod[0].build_id, "a6ce40dc3aedb1becacd2f1ff4515307");
+        *(uintptr_t *)(base + 0xa76728) = (uintptr_t)object;
+        sync = (int32_t *)(object + 0x50); *sync = 2;
     } else if (which >= 9) {   // the present interval alone (UE 4.18's nvn.SyncInterval); 12: a main the rewriter found no variable in
         strcpy(g_mod[0].build_id, "0123456789abcdef0123456789abcdef");
         if (which != 12) cvar("nvn.SyncInterval", 0x8adca10);
@@ -203,13 +207,14 @@ static void check(int which) {
         dm_fps_lock_tick();
         assert(sync[0] == 1 && sync[1] == 1 && writes == 2);
     }
+    else if (which == 30) assert(*sync == 0 && writes == 1);
     else assert(sync[0] == 2 && sync[1] == 2 && writes == 0);
     munmap(base, len);
 }
 
 int main(void) {
     // Each process starts the production one-time initialization with a fresh build and target.
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < 31; i++) {
         pid_t p = fork(); assert(p >= 0);
         if (!p) { check(i); _exit(0); }
         int status; assert(waitpid(p, &status, 0) == p); assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
