@@ -144,6 +144,7 @@ int mtl_gpu_to_buf(uint64_t gpu_addr, uint64_t len, void **buf, uint64_t *off);
 @property (nonatomic, strong) id<MTLTexture> outputTexture;
 @property (nonatomic) NSUInteger inputContentWidth;
 @property (nonatomic) NSUInteger inputContentHeight;
+@property (nonatomic, strong) id<MTLFence> fence;
 - (void)encodeToCommandBuffer:(id)commandBuffer;
 @end
 

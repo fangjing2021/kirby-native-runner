@@ -1552,6 +1552,7 @@ static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescri
 static inline void enc_r_end_pass(id e) {
     if (!barrier_game() || g_image_heap_n) { m4_end(e); return; }
     gp_end(e); [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:resource_vis()];
+    [DmCompatArgumentTable notifyEncoderEnded:e];
     [e endEncoding]; g_last_end_relaxed = 1;
 }
 static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { g_cm_enc++; cm_enc_mark(2); id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; cm_enc_mark(0); [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e; }
@@ -15202,7 +15203,15 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
 // bytes), then draw 1:1 with the usual origin and output format. Queue barriers serialize both the frame's rendering and reuse of the scaler's textures across presents.
 // Replacing those textures waits for earlier presents; throttle replacement during resizing, and keep standard scaling for refused sizes. Offscreen captures own separate state.
 #define FX_REMAKE_PRESENTS 30
-typedef struct { id<MTL4FXSpatialScaler> sc; id<MTLTexture> in, out; uint64_t made_at; int made; NSUInteger refused[6]; } fx_state;
+typedef struct {
+    id<MTL4FXSpatialScaler> sc;
+    id<MTLTexture> in, out;
+    id<MTLTexture> in_pool[3], out_pool[3];
+    id<MTLFence> fence[3];
+    uint64_t made_at;
+    int made;
+    NSUInteger refused[6];
+} fx_state;
 static fx_state g_fx_present;   // only the present thread encodes or replaces the scaler
 static id<MTL4Compiler> g_fx_comp;
 static int g_fx_mode = -1;   // 1 = metalfx, 0 = off
@@ -15223,15 +15232,25 @@ static int fx_wanted(MTLViewport vp, NSUInteger cw, NSUInteger ch) {
 }
 // Encodes the upscale of the rectangle r of raw into cb (see above); returns the scaled picture, which the present pass draws 1:1 into vp, or nil (the bilinear pass).
 // remake_wait: fx is the present thread's, whose textures presents still on the GPU may read: a new scaler waits for them and for FX_REMAKE_PRESENTS presents since the last
-static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTexture> raw, const NSUInteger r[4], MTLViewport vp, MTLPixelFormat out_pf, int remake_wait) {
+static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTexture> raw, const NSUInteger r[4], MTLViewport vp, MTLPixelFormat out_pf, int remake_wait, int slot) {
     NSUInteger cw = r[2], ch = r[3], ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
     if (fx_mode() != 1 || !fx_wanted(vp, cw, ch)) return nil;
-    if (!fx->sc || fx->in.width != cw || fx->in.height != ch || fx->in.pixelFormat != raw.pixelFormat || fx->out.width != ow || fx->out.height != oh || fx->out.pixelFormat != out_pf) {
+    id<MTLTexture> ref_in = fx->in_pool[0] ? fx->in_pool[0] : fx->in;
+    id<MTLTexture> ref_out = fx->out_pool[0] ? fx->out_pool[0] : fx->out;
+    if (!fx->sc || !ref_in || !ref_out || ref_in.width != cw || ref_in.height != ch || ref_in.pixelFormat != raw.pixelFormat || ref_out.width != ow || ref_out.height != oh || ref_out.pixelFormat != out_pf) {
         NSUInteger key[6] = {cw, ch, raw.pixelFormat, ow, oh, out_pf};
         if (!memcmp(key, fx->refused, sizeof key)) return nil;
         if (remake_wait && fx->made && g_present_n < fx->made_at + FX_REMAKE_PRESENTS) return nil;
         if (remake_wait) { pthread_mutex_lock(&g_pq_mu); while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu); pthread_mutex_unlock(&g_pq_mu); }
-        res_remove(fx->in); res_remove(fx->out); fx->sc = nil; fx->in = fx->out = nil;
+        for (int i = 0; i < 3; i++) {
+            if (fx->in_pool[i]) { res_remove(fx->in_pool[i]); fx->in_pool[i] = nil; }
+            if (fx->out_pool[i]) { res_remove(fx->out_pool[i]); fx->out_pool[i] = nil; }
+            fx->fence[i] = nil;
+        }
+        if (fx->in && fx->in != fx->in_pool[0]) { res_remove(fx->in); }
+        if (fx->out && fx->out != fx->out_pool[0]) { res_remove(fx->out); }
+        fx->in = nil; fx->out = nil;
+        fx->sc = nil;
         uint64_t t0 = now_ns(); NSError *e = nil;
         if (!g_fx_comp) g_fx_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
         MTLFXSpatialScalerDescriptor *d = [MTLFXSpatialScalerDescriptor new];
@@ -15242,27 +15261,60 @@ static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTe
         if (!sc) { memcpy(fx->refused, key, sizeof key);
             MLOG("present upscaling: MetalFX makes no spatial scaler for %lux%lu format %lu → %lux%lu format %lu%s; this size is scaled bilinearly", (unsigned long)cw, (unsigned long)ch, (unsigned long)raw.pixelFormat,
                  (unsigned long)ow, (unsigned long)oh, (unsigned long)out_pf, g_fx_comp ? "" : " (no Metal 4 compiler)"); return nil; }
-        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:raw.pixelFormat width:cw height:ch mipmapped:NO];
-        td.storageMode = MTLStorageModePrivate; td.usage = sc.colorTextureUsage | MTLTextureUsageShaderRead;
-        id<MTLTexture> in = [g_dev newTextureWithDescriptor:td];
-        td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:out_pf width:ow height:oh mipmapped:NO];
-        td.storageMode = MTLStorageModePrivate; td.usage = sc.outputTextureUsage | MTLTextureUsageShaderRead;
-        id<MTLTexture> out = [g_dev newTextureWithDescriptor:td];
-        if (!in || !out) { memcpy(fx->refused, key, sizeof key); MLOG("[RED] present upscaling: cannot create the scaler's textures (%lux%lu, %lux%lu)", (unsigned long)cw, (unsigned long)ch, (unsigned long)ow, (unsigned long)oh); return nil; }
-        in.label = @"present upscale input"; out.label = @"present upscale output";
-        res_add(in); res_add(out); res_commit();
-        fx->sc = sc; fx->in = in; fx->out = out;
-        MLOG("present upscaling: MetalFX spatial scaler %lux%lu → %lux%lu (format %lu → %lu, scaler #%d, made in %.1f ms)", (unsigned long)cw, (unsigned long)ch, (unsigned long)ow, (unsigned long)oh,
+        MTLTextureDescriptor *td_in = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:raw.pixelFormat width:cw height:ch mipmapped:NO];
+        td_in.storageMode = MTLStorageModePrivate; td_in.usage = sc.colorTextureUsage | MTLTextureUsageShaderRead;
+        MTLTextureDescriptor *td_out = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:out_pf width:ow height:oh mipmapped:NO];
+        td_out.storageMode = MTLStorageModePrivate; td_out.usage = sc.outputTextureUsage | MTLTextureUsageShaderRead;
+        BOOL all_ok = YES;
+        for (int i = 0; i < 3; i++) {
+            fx->in_pool[i] = [g_dev newTextureWithDescriptor:td_in];
+            fx->out_pool[i] = [g_dev newTextureWithDescriptor:td_out];
+            fx->fence[i] = [g_dev newFence];
+            if (!fx->in_pool[i] || !fx->out_pool[i] || !fx->fence[i]) { all_ok = NO; break; }
+            fx->in_pool[i].label = [NSString stringWithFormat:@"present upscale input %d", i];
+            fx->out_pool[i].label = [NSString stringWithFormat:@"present upscale output %d", i];
+            res_add(fx->in_pool[i]); res_add(fx->out_pool[i]);
+        }
+        if (!all_ok) {
+            for (int i = 0; i < 3; i++) {
+                if (fx->in_pool[i]) { res_remove(fx->in_pool[i]); fx->in_pool[i] = nil; }
+                if (fx->out_pool[i]) { res_remove(fx->out_pool[i]); fx->out_pool[i] = nil; }
+                fx->fence[i] = nil;
+            }
+            fx->in = nil; fx->out = nil;
+            memcpy(fx->refused, key, sizeof key);
+            MLOG("[RED] present upscaling: cannot create the scaler's textures (%lux%lu, %lux%lu)", (unsigned long)cw, (unsigned long)ch, (unsigned long)ow, (unsigned long)oh);
+            return nil;
+        }
+        res_commit();
+        fx->sc = sc;
+        fx->in = fx->in_pool[0];
+        fx->out = fx->out_pool[0];
+        MLOG("present upscaling: MetalFX spatial scaler %lux%lu → %lux%lu (format %lu → %lu, scaler #%d, triple-buffered, made in %.1f ms)", (unsigned long)cw, (unsigned long)ch, (unsigned long)ow, (unsigned long)oh,
              (unsigned long)raw.pixelFormat, (unsigned long)out_pf, fx->made, (now_ns() - t0) / 1e6);
     }
+    int slot_i = (slot >= 0 && slot < 3) ? slot : 0;
+    id<MTLTexture> in_tex = fx->in_pool[slot_i] ? fx->in_pool[slot_i] : fx->in;
+    id<MTLTexture> out_tex = fx->out_pool[slot_i] ? fx->out_pool[slot_i] : fx->out;
+    id<MTLFence> fence = fx->fence[slot_i];
+
     id ce = [cb respondsToSelector:@selector(blitCommandEncoder)] ? [cb blitCommandEncoder] : [cb computeCommandEncoder];
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];   // after the frame's work
-    [ce copyFromTexture:raw sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(r[0], r[1], 0) sourceSize:MTLSizeMake(cw, ch, 1) toTexture:fx->in destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [ce copyFromTexture:raw sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(r[0], r[1], 0) sourceSize:MTLSizeMake(cw, ch, 1) toTexture:in_tex destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    if (fence && [ce respondsToSelector:@selector(updateFence:)]) {
+        [ce updateFence:fence];
+    }
     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // the scaler's encoders come after the copy
     [ce endEncoding];
-    fx->sc.colorTexture = fx->in; fx->sc.inputContentWidth = cw; fx->sc.inputContentHeight = ch; fx->sc.outputTexture = fx->out;
+    if (fence && [fx->sc respondsToSelector:@selector(setFence:)]) {
+        fx->sc.fence = fence;
+    }
+    fx->sc.colorTexture = in_tex;
+    fx->sc.inputContentWidth = cw;
+    fx->sc.inputContentHeight = ch;
+    fx->sc.outputTexture = out_tex;
     [fx->sc encodeToCommandBuffer:cb];
-    return fx->out;
+    return out_tex;
 }
 // ---------- A game's own upscaler drawn by MetalFX (DM_UPSCALER) ----------
 // Donkey Kong Bananza upscales its frame with agl's NDSR network: one compute dispatch (agl_ndsr.pck, 24 variants; Splatoon Raiders ships 20) reading the scene colour (texture slot 0, R11G11B10F; see up_mfx_color)
@@ -15418,22 +15470,25 @@ static int up_mfx_encode(NvShader *cs) {
 }
 // The present pass: src's valid rectangle drawn into dst (the drawable, or a screenshot's texture) as present_encode draws it, through MetalFX first where fx_encode takes it
 // (fx: the scaler state to use, nil = bilinear). uvb: the pass's crop constants (one buffer per present allocator, written by the CPU)
-static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], id<MTLBuffer> uvb, fx_state *fx) {
+static int present_encode_m4_slot(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], id<MTLBuffer> uvb, fx_state *fx, int slot) {
     NSUInteger r[4]; if (!present_crop_rect(src, crop, r)) return 0;
     present_pipeline(dst.pixelFormat);
     double dw = dst.width, dh = dst.height;
     MTLViewport vp = present_fit(src, dw, dh);
-    int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
-    id<MTLTexture> tex = present_raw_src(src), up = fx ? fx_encode(fx, cb, tex, r, vp, dst.pixelFormat, fx == &g_fx_present) : nil;
+    id<MTLTexture> tex = present_raw_src(src), up = fx ? fx_encode(fx, cb, tex, r, vp, dst.pixelFormat, fx == &g_fx_present, slot) : nil;
     if (up) { tex = up; r[0] = r[1] = 0; r[2] = up.width; r[3] = up.height; }   // the scaled picture, the viewport's size: drawn 1:1
     MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
     rp.colorAttachments[0].texture = dst;
-    rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionClear;
+    rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     id<MTL4RenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     if (!en) { MLOG("[RED] failed to create the M4 present render encoder"); return 0; }
     [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()];
+    int slot_i = (slot >= 0 && slot < 3) ? slot : 0;
+    if (up && fx && fx->fence[slot_i] && [en respondsToSelector:@selector(waitForFence:)]) {
+        [en waitForFence:fx->fence[slot_i]];
+    }
     [en setArgumentTable:g_present_args atStages:MTLRenderStageFragment];
     [g_present_args setTexture:tex.gpuResourceID atIndex:0];
     [g_present_args setSamplerState:g_blit_samp.gpuResourceID atIndex:0];
@@ -15453,6 +15508,9 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     m4_end(en);
     return up ? PRESENT_METALFX : PRESENT_STANDARD;
 }
+static inline int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], id<MTLBuffer> uvb, fx_state *fx) {
+    return present_encode_m4_slot(cb, src, dst, crop, uvb, fx, 0);
+}
 // The present's picture drawn into an offscreen texture (out: private, render target) the way present_now draws it into the drawable, MetalFX included, on the Metal 4 queue;
 // returns whether it was submitted. Completion reports the encoding kind, or PRESENT_FAILED on a GPU error. Resources remain resident and retained until GPU completion.
 static int present_offscreen_m4(id<MTLTexture> src, const int crop[4], id<MTLTexture> out, void (^done)(int)) {
@@ -15465,11 +15523,26 @@ static int present_offscreen_m4(id<MTLTexture> src, const int crop[4], id<MTLTex
     [cb beginCommandBufferWithAllocator:al];
     int kind = present_encode_m4(cb, raw, out, crop, uvb, &fx);
     [cb endCommandBuffer];
-    if (!kind) { res_remove(out); res_remove(uvb); res_remove(fx.in); res_remove(fx.out); return 0; }
+    if (!kind) {
+        res_remove(out); res_remove(uvb);
+        for (int i = 0; i < 3; i++) {
+            if (fx.in_pool[i]) res_remove(fx.in_pool[i]);
+            if (fx.out_pool[i]) res_remove(fx.out_pool[i]);
+        }
+        if (fx.in && fx.in != fx.in_pool[0]) res_remove(fx.in);
+        if (fx.out && fx.out != fx.out_pool[0]) res_remove(fx.out);
+        return 0;
+    }
     MTL4CommitOptions *options = [MTL4CommitOptions new];
     [options addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         (void)al; (void)cb; (void)raw; (void)fx.sc;   // keep the Metal 4 commands, source view and scaler alive too
-        res_remove(out); res_remove(uvb); res_remove(fx.in); res_remove(fx.out);
+        res_remove(out); res_remove(uvb);
+        for (int i = 0; i < 3; i++) {
+            if (fx.in_pool[i]) res_remove(fx.in_pool[i]);
+            if (fx.out_pool[i]) res_remove(fx.out_pool[i]);
+        }
+        if (fx.in && fx.in != fx.in_pool[0]) res_remove(fx.in);
+        if (fx.out && fx.out != fx.out_pool[0]) res_remove(fx.out);
         if (f.error) { MLOG("[RED] offscreen present: %s", f.error.description.UTF8String); gpu_lost_check(f.error, "offscreen present"); }
         done(f.error ? PRESENT_FAILED : kind);
     }];
@@ -15582,7 +15655,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     }
     g_present_cb[alloc_i] = cb;
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-    int kind = present_encode_m4(cb, src, dr.texture, crop, g_present_uv[alloc_i], &g_fx_present);
+    int kind = present_encode_m4_slot(cb, src, dr.texture, crop, g_present_uv[alloc_i], &g_fx_present, alloc_i);
     if (!kind) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
     int fx_kind = kind == PRESENT_METALFX;
     [cb endCommandBuffer];

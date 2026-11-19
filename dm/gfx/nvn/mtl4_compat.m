@@ -667,23 +667,26 @@ static id<MTLCommandQueue> s_compat_queue;
 
 @interface DmCbFenceTracker : NSObject {
 @public
-    id<MTLFence> _fences[2];
+    id<MTLFence> _fences[32];
     int _nextUpdateIdx;
     int _readyWaitIdx;
     BOOL _hasUpdate;
     void *_lastUpdatingEncoder;
+    void *_lastWaitingEncoder;
 }
 @end
 
 @implementation DmCbFenceTracker
 - (instancetype)initWithDevice:(id<MTLDevice>)dev {
     if ((self = [super init])) {
-        _fences[0] = [dev newFence];
-        _fences[1] = [dev newFence];
+        for (int i = 0; i < 32; i++) {
+            _fences[i] = [dev newFence];
+        }
         _nextUpdateIdx = 0;
         _readyWaitIdx = -1;
         _hasUpdate = NO;
         _lastUpdatingEncoder = NULL;
+        _lastWaitingEncoder = NULL;
     }
     return self;
 }
@@ -709,7 +712,7 @@ static char kFenceKey;
             }
         }
     }
-    if (!tracker || !tracker->_fences[0] || !tracker->_fences[1]) return;
+    if (!tracker) return;
     if (tracker->_hasUpdate && tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
     
     int uIdx = tracker->_nextUpdateIdx;
@@ -725,7 +728,8 @@ static char kFenceKey;
         tracker->_readyWaitIdx = uIdx;
         tracker->_hasUpdate = YES;
         tracker->_lastUpdatingEncoder = (__bridge void *)self;
-        tracker->_nextUpdateIdx = (uIdx + 1) % 2;
+        tracker->_lastWaitingEncoder = NULL;
+        tracker->_nextUpdateIdx = (uIdx + 1) % 32;
     }
 }
 - (void)barrierAfterEncoderStages:(NSUInteger)after beforeEncoderStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
@@ -743,6 +747,7 @@ static char kFenceKey;
     DmCbFenceTracker *tracker = objc_getAssociatedObject(cb, &kFenceKey);
     if (!tracker || !tracker->_hasUpdate || tracker->_readyWaitIdx < 0) return;
     if (tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
+    if (tracker->_lastWaitingEncoder == (__bridge void *)self) return;
     
     int wIdx = tracker->_readyWaitIdx;
     id<MTLFence> f = tracker->_fences[wIdx];
@@ -754,8 +759,7 @@ static char kFenceKey;
         } else {
             return;
         }
-        tracker->_hasUpdate = NO;
-        tracker->_readyWaitIdx = -1;
+        tracker->_lastWaitingEncoder = (__bridge void *)self;
     }
 }
 - (void)setArgumentTable:(id)table {
