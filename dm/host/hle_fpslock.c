@@ -53,8 +53,12 @@ static const lock_t k_locks[] = {
     { "a48c0de3bc353efa0e4d359bde05ef24", "FIFA frame regulator", 0xda20e38, 0x8, FPS_F64, 2, 0 },
     // Kirby and the Forgotten Land 1.1.0: HAL Laboratory engine interval at [main+0xa76728]+0x50. Value 2 = 30 FPS, value 1 = 60 FPS (vsyncs per frame)
     { "a6ce40dc3aedb1becacd2f1ff4515307", "HAL engine interval", 0xa76728, 0x50, VSYNCS_I32, 1 },
+    // Kirby and the Forgotten Land 1.1.0: Double-buffer bypass / unclamp at [main+0xa764d0]+0x3694
+    { "a6ce40dc3aedb1becacd2f1ff4515307", "HAL double-buffer bypass", 0xa764d0, 0x3694, MODE_U32, 1 },
     // Kirby and the Forgotten Land 1.0.0:
     { "d9ba7db72ffafecd07f5f5535dec0573", "HAL engine interval", 0xa72628, 0x50, VSYNCS_I32, 1 },
+    // Kirby and the Forgotten Land 1.0.0: Double-buffer bypass / unclamp at [main+0xa723d0]+0x3694
+    { "d9ba7db72ffafecd07f5f5535dec0573", "HAL double-buffer bypass", 0xa723d0, 0x3694, MODE_U32, 1 },
 };
 #define NLOCKS ((int)(sizeof k_locks / sizeof k_locks[0]))
 
