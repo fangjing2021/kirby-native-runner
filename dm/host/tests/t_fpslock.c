@@ -207,7 +207,7 @@ static void check(int which) {
         dm_fps_lock_tick();
         assert(sync[0] == 1 && sync[1] == 1 && writes == 2);
     }
-    else if (which == 30) assert(*sync == 1 && writes == 1);
+    else if (which == 30) assert(*sync == 0 && writes == 1);
     else assert(sync[0] == 2 && sync[1] == 2 && writes == 0);
     munmap(base, len);
 }

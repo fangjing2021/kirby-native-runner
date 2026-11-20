@@ -51,10 +51,10 @@ static const lock_t k_locks[] = {
     // this row the game keeps 30 fps at the right speed (the simulation at 60 and the regulator at 30: match clock as at 30). The game asks for present interval 2
     // (BaseDisplaySettings.PresentInterval), which the profile's present_interval display ignores
     { "a48c0de3bc353efa0e4d359bde05ef24", "FIFA frame regulator", 0xda20e38, 0x8, FPS_F64, 2, 0 },
-    // Kirby and the Forgotten Land 1.1.0: HAL Laboratory engine interval at [main+0xa76728]+0x50. Value 2 = 30 FPS, value 1 = 60 FPS (vsyncs per frame)
-    { "a6ce40dc3aedb1becacd2f1ff4515307", "HAL engine interval", 0xa76728, 0x50, VSYNCS_I32, 1 },
+    // Kirby and the Forgotten Land 1.1.0: HAL Laboratory engine interval at [main+0xa76728]+0x50. Value 2 = 30 FPS, value 0 = unlocked (FPSLocker / Hazerou)
+    { "a6ce40dc3aedb1becacd2f1ff4515307", "HAL engine interval", 0xa76728, 0x50, ZERO_I32, 1 },
     // Kirby and the Forgotten Land 1.0.0:
-    { "d9ba7db72ffafecd07f5f5535dec0573", "HAL engine interval", 0xa72628, 0x50, VSYNCS_I32, 1 },
+    { "d9ba7db72ffafecd07f5f5535dec0573", "HAL engine interval", 0xa72628, 0x50, ZERO_I32, 1 },
 };
 #define NLOCKS ((int)(sizeof k_locks / sizeof k_locks[0]))
 
