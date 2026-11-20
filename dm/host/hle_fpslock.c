@@ -22,7 +22,7 @@
 // frame for two, so a shorter time showed some frames for one (30.4 fps); 30 writes the game's own 33.333 ms
 // Also: a frame time in ticks as a uint32 (scale / frame rate: 19,200,000 for the Switch's 19.2 MHz system tick), a frame step in seconds as a float (1 / frame rate), and a mode
 // switch an engine reads before it takes those fields at all (written 1 at any target)
-enum { FPS_F32, VSYNCS_I32, MS_F32, FPS_I32, TICKS_U32, SECS_F32, MODE_U32, FPS_F64 };
+enum { FPS_F32, VSYNCS_I32, MS_F32, FPS_I32, TICKS_U32, SECS_F32, MODE_U32, FPS_F64, ZERO_I32 };
 #define MS_MARGIN 0.5f
 static float ms_want(int fps) { return 1000.0f / (float)fps - (fps == 60 ? MS_MARGIN : 0); }
 typedef struct { const char *build, *what; uint64_t ptr_off; uint32_t field; uint8_t kind, copies; uint32_t scale; uint32_t flag; } lock_t;   // flag: byte offset << 8 | bit mask the object must have set for the write (0: none)
@@ -51,14 +51,10 @@ static const lock_t k_locks[] = {
     // this row the game keeps 30 fps at the right speed (the simulation at 60 and the regulator at 30: match clock as at 30). The game asks for present interval 2
     // (BaseDisplaySettings.PresentInterval), which the profile's present_interval display ignores
     { "a48c0de3bc353efa0e4d359bde05ef24", "FIFA frame regulator", 0xda20e38, 0x8, FPS_F64, 2, 0 },
-    // Kirby and the Forgotten Land 1.1.0: HAL Laboratory engine interval at [main+0xa76728]+0x50. Value 2 = 30 FPS, value 1 = 60 FPS (vsyncs per frame)
-    { "a6ce40dc3aedb1becacd2f1ff4515307", "HAL engine interval", 0xa76728, 0x50, VSYNCS_I32, 1 },
-    // Kirby and the Forgotten Land 1.1.0: Double-buffer bypass / unclamp at [main+0xa764d0]+0x3694
-    { "a6ce40dc3aedb1becacd2f1ff4515307", "HAL double-buffer bypass", 0xa764d0, 0x3694, MODE_U32, 1 },
+    // Kirby and the Forgotten Land 1.1.0: HAL Laboratory engine interval at [main+0xa76728]+0x50. Value 2 = 30 FPS, value 0 = unlocked (FPSLocker / Hazerou)
+    { "a6ce40dc3aedb1becacd2f1ff4515307", "HAL engine interval", 0xa76728, 0x50, ZERO_I32, 1 },
     // Kirby and the Forgotten Land 1.0.0:
-    { "d9ba7db72ffafecd07f5f5535dec0573", "HAL engine interval", 0xa72628, 0x50, VSYNCS_I32, 1 },
-    // Kirby and the Forgotten Land 1.0.0: Double-buffer bypass / unclamp at [main+0xa723d0]+0x3694
-    { "d9ba7db72ffafecd07f5f5535dec0573", "HAL double-buffer bypass", 0xa723d0, 0x3694, MODE_U32, 1 },
+    { "d9ba7db72ffafecd07f5f5535dec0573", "HAL engine interval", 0xa72628, 0x50, ZERO_I32, 1 },
 };
 #define NLOCKS ((int)(sizeof k_locks / sizeof k_locks[0]))
 
@@ -372,6 +368,10 @@ void dm_fps_lock_tick(void) {
                 want = 1;
                 if (cur) continue;   // already 1, or not this switch: 0 is the engine's default
                 snprintf(was, sizeof was, "%u", cur);
+            } else if (L->kind == ZERO_I32) {
+                want = target >= 60 ? 0 : 2;
+                if (cur == want) continue;
+                snprintf(was, sizeof was, "%u", cur);
             } else {
                 int fps = L->kind == FPS_I32;
                 want = fps ? (uint32_t)target : target > 60 ? 1 : 60 / (uint32_t)target;   // above 60 the display link paces it: a vsync count stays 1
@@ -385,6 +385,7 @@ void dm_fps_lock_tick(void) {
                 else if (L->kind == SECS_F32) snprintf(now, sizeof now, "%.5f s (%d fps)", 1.0 / target, target);
                 else if (L->kind == TICKS_U32) snprintf(now, sizeof now, "%u (%d fps)", want, target);
                 else if (L->kind == MODE_U32) snprintf(now, sizeof now, "1 (%d fps)", target);
+                else if (L->kind == ZERO_I32) snprintf(now, sizeof now, "%u (%d fps)", want, target);
                 else snprintf(now, sizeof now, "%u%s", L->kind == FPS_F32 ? (unsigned)target : want, L->kind == FPS_F32 || L->kind == FPS_I32 ? " fps" : " vsyncs");
                 LOG("main: %s%s %s → %s (%s)", L->what, L->copies > 1 ? (c ? " (render thread)" : " (game thread)") : "", was, now, src); }
         }

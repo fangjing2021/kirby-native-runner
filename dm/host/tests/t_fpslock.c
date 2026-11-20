@@ -118,12 +118,9 @@ static void check(int which) {
         *(uintptr_t *)(base + 0x21e60d8) = (uintptr_t)object;
         *(int32_t *)(object + 0x1dc) = which == 17 ? 30 : 60;
     } else if (which == 30) {
-        static uint8_t kirby_bypass[0x4000];
         strcpy(g_mod[0].build_id, "a6ce40dc3aedb1becacd2f1ff4515307");
         *(uintptr_t *)(base + 0xa76728) = (uintptr_t)object;
         sync = (int32_t *)(object + 0x50); *sync = 2;
-        *(uintptr_t *)(base + 0xa764d0) = (uintptr_t)kirby_bypass;
-        *(uint32_t *)(kirby_bypass + 0x3694) = 0;
     } else if (which >= 9) {   // the present interval alone (UE 4.18's nvn.SyncInterval); 12: a main the rewriter found no variable in
         strcpy(g_mod[0].build_id, "0123456789abcdef0123456789abcdef");
         if (which != 12) cvar("nvn.SyncInterval", 0x8adca10);
@@ -210,7 +207,7 @@ static void check(int which) {
         dm_fps_lock_tick();
         assert(sync[0] == 1 && sync[1] == 1 && writes == 2);
     }
-    else if (which == 30) assert(*sync == 1 && writes == 2);
+    else if (which == 30) assert(*sync == 0 && writes == 1);
     else assert(sync[0] == 2 && sync[1] == 2 && writes == 0);
     munmap(base, len);
 }
