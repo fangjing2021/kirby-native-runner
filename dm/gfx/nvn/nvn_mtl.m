@@ -6511,6 +6511,7 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
                           toTexture:v destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
                 [ce endEncoding];
                 [cb commit];
+                [cb waitUntilCompleted];
                 res_add(v); res_commit();
                 r->alt = (void *)CFBridgingRetain(v); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)want; r->alt_rid = v.gpuResourceID._impl;
                 *rid = r->alt_rid; return v;
@@ -10682,14 +10683,18 @@ static void dummy_prewarm(void) {
         id real_up_ct = rec_table_real(g_up_ct);
         uint64_t tr = dummy_tex_rid(MTLTextureType2D, NVN_DPF_FLOAT);
         uint64_t sr = dummy_samp().gpuResourceID._impl;
-        for (NSUInteger k = 0; k < 32; k++) {
-            if (real_vt) { [(id<MTL4ArgumentTable>)real_vt setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_vt setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_vt setSamplerState:(MTLResourceID){sr} atIndex:k]; }
-            if (real_ft) { [(id<MTL4ArgumentTable>)real_ft setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_ft setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_ft setSamplerState:(MTLResourceID){sr} atIndex:k]; }
-            if (real_ct) { [(id<MTL4ArgumentTable>)real_ct setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_ct setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_ct setSamplerState:(MTLResourceID){sr} atIndex:k]; }
-            if (real_ot) { [(id<MTL4ArgumentTable>)real_ot setAddress:dgpu atIndex:k]; [(id<MTL4ArgumentTable>)real_ot setTexture:(MTLResourceID){tr} atIndex:k]; [(id<MTL4ArgumentTable>)real_ot setSamplerState:(MTLResourceID){sr} atIndex:k]; }
+        for (NSUInteger k = 0; k < 31; k++) {
+            if (real_vt) [(id<MTL4ArgumentTable>)real_vt setAddress:dgpu atIndex:k];
+            if (real_ft) [(id<MTL4ArgumentTable>)real_ft setAddress:dgpu atIndex:k];
+            if (real_ct) [(id<MTL4ArgumentTable>)real_ct setAddress:dgpu atIndex:k];
+            if (real_ot) [(id<MTL4ArgumentTable>)real_ot setAddress:dgpu atIndex:k];
             if (real_up_ct) [(id<MTL4ArgumentTable>)real_up_ct setAddress:dgpu atIndex:k];
             g_vt_addr[k] = dgpu;
         }
+        if (real_vt) [(id<MTL4ArgumentTable>)real_vt setTexture:(MTLResourceID){tr} atIndex:0];
+        if (real_ft) [(id<MTL4ArgumentTable>)real_ft setTexture:(MTLResourceID){tr} atIndex:0];
+        if (real_ct) [(id<MTL4ArgumentTable>)real_ct setTexture:(MTLResourceID){tr} atIndex:0];
+        if (real_ot) [(id<MTL4ArgumentTable>)real_ot setTexture:(MTLResourceID){tr} atIndex:0];
         if (g_present_args) {
             [(id<MTL4ArgumentTable>)g_present_args setAddress:dgpu atIndex:0];
             [(id<MTL4ArgumentTable>)g_present_args setTexture:(MTLResourceID){tr} atIndex:0];

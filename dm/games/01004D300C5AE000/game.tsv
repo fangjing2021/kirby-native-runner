@@ -39,9 +39,10 @@ shader_groups	/gfx/=gfx /ptcl/=ptcl /lyt/=lyt /shader/=shader
 shader_note	Kirby and the Forgotten Land shaders
 
 # ---- Frame rate ----
-# HAL Laboratory engine interval unlock at [main+0xa76728]+0x50; present pacing follows the 60 Hz display link
-fps_target	60
-fps_max	60
+# HAL Laboratory engine interval at [main+0xa76728]+0x50; 30 FPS baseline (interval 2)
+fps_target	30
+fps_max	30
 present_interval	display
 present_snap	on
+
 
