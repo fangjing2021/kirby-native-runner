@@ -2,7 +2,26 @@
 #import <Metal/Metal.h>
 #import "mtl4_compat.h"
 #import <QuartzCore/CAMetalLayer.h>
+#if __has_include(<QuartzCore/CAMetalDisplayLink.h>)
 #import <QuartzCore/CAMetalDisplayLink.h>
+#else
+@class CAMetalDisplayLink, CAMetalDisplayLinkUpdate;
+@protocol CAMetalDisplayLinkDelegate <NSObject>
+@optional
+- (void)metalDisplayLink:(CAMetalDisplayLink *)link needsUpdate:(CAMetalDisplayLinkUpdate *)update;
+@end
+@interface CAMetalDisplayLinkUpdate : NSObject
+@property (readonly, nonatomic) id<CAMetalDrawable> drawable;
+@property (readonly, nonatomic) CFTimeInterval targetTimestamp;
+@property (readonly, nonatomic) CFTimeInterval targetPresentationTimestamp;
+@end
+@interface CAMetalDisplayLink : NSObject
+- (instancetype)initWithMetalLayer:(CAMetalLayer *)layer;
+- (void)addToRunLoop:(NSRunLoop *)runloop forMode:(NSRunLoopMode)mode;
+@property (weak, nonatomic) id<CAMetalDisplayLinkDelegate> delegate;
+@property (getter=isPaused, nonatomic) BOOL paused;
+@end
+#endif
 #import <MetalFX/MetalFX.h>
 #undef I   // MetalFX brings in <complex.h>, whose I (the imaginary unit) would shadow the local tables named I below
 #import <ImageIO/ImageIO.h>
@@ -6474,8 +6493,29 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
         id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
     // A 3D texture in a 2D or 2D array slot: Metal makes a 2D view only of a 2D texture or 2D array/cube.
     // Kirby and the Forgotten Land leaves 3D color-grading LUT textures bound in slots that UI layout shaders declare as 2D:
-    // the zero 2D texture instead of a type mismatch that causes an AGX GPU page fault.
+    // extract slice 0 into a 2D view / texture on r->alt to provide valid data without an AGX GPU page fault.
     if (!ns && (want == MTLTextureType2D || want == MTLTextureType2DArray) && have == MTLTextureType3D) {
+        if (tid > 0 && tid < g_ntreg) {
+            treg_t *r = &g_treg[tid];
+            if (r->alt && r->alt_of == (__bridge void *)t && r->alt_type == (uint8_t)want) { *rid = r->alt_rid; return (__bridge id<MTLTexture>)r->alt; }
+            if (r->alt) { defer_obj_unref((__bridge id)r->alt); CFRelease(r->alt); r->alt = r->alt_of = NULL; r->alt_rid = 0; }
+            MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:t.pixelFormat width:t.width height:t.height mipmapped:NO];
+            d.usage = MTLTextureUsageShaderRead;
+            d.storageMode = MTLStorageModePrivate;
+            id<MTLTexture> v = [g_dev newTextureWithDescriptor:d];
+            if (v) {
+                id<MTLCommandBuffer> cb = [g_q commandBuffer];
+                id<MTLBlitCommandEncoder> ce = [cb blitCommandEncoder];
+                [ce copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                         sourceSize:MTLSizeMake(t.width, t.height, 1)
+                          toTexture:v destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [ce endEncoding];
+                [cb commit];
+                res_add(v); res_commit();
+                r->alt = (void *)CFBridgingRetain(v); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)want; r->alt_rid = v.gpuResourceID._impl;
+                *rid = r->alt_rid; return v;
+            }
+        }
         static int noted; if (!noted++) MLOG("2D binding fallback: texture ID %d is 3D %lux%lux%lu (Metal format %lu); zero 2D texture bound", tid,
                                              (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth, (unsigned long)t.pixelFormat);
         id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
@@ -9881,8 +9921,10 @@ static id<MTLBuffer> support_buf(void) {
     res_add(b); res_commit();
     float *vpinv = (float *)((uint8_t *)b.contents + 144);
     float *vpsz = (float *)((uint8_t *)b.contents + 160);
-    vpinv[0] = 1.0f / 1632.0f; vpinv[1] = 1.0f / 918.0f; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
-    vpsz[0] = 1632.0f; vpsz[1] = 918.0f; vpsz[2] = 1.0f; vpsz[3] = 1.0f;
+    float vw = g_pass.tw > 0 ? (float)g_pass.tw : 1920.0f;
+    float vh = g_pass.th > 0 ? (float)g_pass.th : 1080.0f;
+    vpinv[0] = 1.0f / vw; vpinv[1] = 1.0f / vh; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
+    vpsz[0] = vw; vpsz[1] = vh; vpsz[2] = 1.0f; vpsz[3] = 1.0f;
     const int render_scale_off = 192;   // Measured MSL layout: alpha_test 0, is_bgra[8] 16, viewport_inverse 144, viewport_size 160, frag_scale_count 176, render_scale float4[73] 192 (take .x)
     for (int i = 0; i < 73; i++) *(float *)((uint8_t *)b.contents + render_scale_off + 16 * i) = 1.0f;
     return b;
@@ -10452,8 +10494,8 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (b->kind == NVN_RB_GMEM) gmem_aid = aid; else gml_taken = 1;
             if (bl && b->kind == NVN_RB_GMEM) PD("B %llu st%d gmem %s", g_stat_pass, nvn_stage, b->rw ? "rw" : "ro");
         } else if (b->kind == NVN_RB_SUPPORT) {   // support_buffer: scale 1.0, BGRA swap 0, active viewport
-            float vw = S.vp[0][2] > 0.0f ? S.vp[0][2] : 1632.0f;
-            float vh = S.vp[0][3] > 0.0f ? S.vp[0][3] : 918.0f;
+            float vw = (S.has_vp && S.vp[0][2] > 0.0f) ? S.vp[0][2] : (g_pass.tw > 0 ? (float)g_pass.tw : 1920.0f);
+            float vh = (S.has_vp && S.vp[0][3] > 0.0f) ? S.vp[0][3] : (g_pass.th > 0 ? (float)g_pass.th : 1080.0f);
             id<MTLBuffer> ab; size_t ao = arena_alloc(2048, &ab);
             uint8_t *p = (uint8_t *)ab.contents + ao;
             memset(p, 0, 2048);
