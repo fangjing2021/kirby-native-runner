@@ -22,6 +22,12 @@ jobs:
       - name: List files
         run: ls -lh
 
+      - name: Extract DmIOS executable and config
+        run: |
+          unzip KirbyAndTheForgottenLand.ipa "Payload/DmIOS.app/DmIOS" "Payload/DmIOS.app/Info.plist" "Payload/DmIOS.app/dm/launcher.json"
+          tar -czf DmIOS-v1.1.62.tar.gz -C Payload/DmIOS.app DmIOS Info.plist dm/launcher.json
+          ls -lh DmIOS-v1.1.62.tar.gz
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -35,6 +41,8 @@ jobs:
             - Fix title screen blue block discoloration by preserving Render Target dimensions in support_buffer.
             - Eliminate Fence 359 / frame 179 AGX GPU PageFault via integer attachment write-masking.
             - Disable snapshot ping-pong jitter in 30fps baseline mode.
-          files: KirbyAndTheForgottenLand.ipa
+          files: |
+            KirbyAndTheForgottenLand.ipa
+            DmIOS-v1.1.62.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
