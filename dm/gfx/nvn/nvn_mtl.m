@@ -9929,7 +9929,7 @@ static id<MTLBuffer> support_buf(void) {
     float *vpsz = (float *)((uint8_t *)b.contents + 160);
     float vw = g_pass.tw > 0 ? (float)g_pass.tw : 1920.0f;
     float vh = g_pass.th > 0 ? (float)g_pass.th : 1080.0f;
-    vpinv[0] = 1.0f / vw; vpinv[1] = 1.0f / vh; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
+    vpinv[0] = 2.0f / vw; vpinv[1] = 2.0f / vh; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
     vpsz[0] = vw; vpsz[1] = vh; vpsz[2] = 1.0f; vpsz[3] = 1.0f;
     const int render_scale_off = 192;   // Measured MSL layout: alpha_test 0, is_bgra[8] 16, viewport_inverse 144, viewport_size 160, frag_scale_count 176, render_scale float4[73] 192 (take .x)
     for (int i = 0; i < 73; i++) *(float *)((uint8_t *)b.contents + render_scale_off + 16 * i) = 1.0f;
@@ -10507,7 +10507,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             memset(p, 0, 2048);
             float *vpinv = (float *)(p + 144);
             float *vpsz = (float *)(p + 160);
-            vpinv[0] = 1.0f / vw; vpinv[1] = 1.0f / vh; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
+            vpinv[0] = 2.0f / vw; vpinv[1] = 2.0f / vh; vpinv[2] = 1.0f; vpinv[3] = 1.0f;
             vpsz[0] = vw; vpsz[1] = vh; vpsz[2] = 1.0f; vpsz[3] = 1.0f;
             const int render_scale_off = 192;
             for (int i = 0; i < 73; i++) *(float *)(p + render_scale_off + 16 * i) = 1.0f;
