@@ -15731,9 +15731,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         CFTimeInterval tt = d.presentedTime;
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
     }];
-    if (target_ts > 0 && [cb respondsToSelector:@selector(presentDrawable:atTime:)]) {
+    if (!supplied && target_ts > 0 && [cb respondsToSelector:@selector(presentDrawable:atTime:)]) {
         [(id<MTLCommandBuffer>)cb presentDrawable:dr atTime:target_ts];
-    } else if ([cb respondsToSelector:@selector(presentDrawable:afterMinimumDuration:)] && period > 0) {
+    } else if (!supplied && [cb respondsToSelector:@selector(presentDrawable:afterMinimumDuration:)] && period > 0) {
         [(id<MTLCommandBuffer>)cb presentDrawable:dr afterMinimumDuration:period];
     } else if ([cb respondsToSelector:@selector(presentDrawable:)]) {
         [(id<MTLCommandBuffer>)cb presentDrawable:dr];

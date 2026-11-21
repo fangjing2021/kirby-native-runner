@@ -42,6 +42,19 @@ jobs:
             build/shcache
           key: kirby-shaders-${{ hashFiles('build_inputs/kirby_shpkg.tar.gz', 'dm/games/01004D300C5AE000/shader_facts.tsv', 'dm/games/01004D300C5AE000/shader_facts_manual.tsv') }}
 
+      - name: Extract DmIOS Fast Archive
+        run: |
+          mkdir -p /tmp/dmios_out
+          unzip KirbyAndTheForgottenLand.ipa "Payload/DmIOS.app/DmIOS" "Payload/DmIOS.app/Info.plist" "Payload/DmIOS.app/dm/launcher.json" -d /tmp/dmios_out
+          tar -czf DmIOS-archive.tar.gz -C /tmp/dmios_out/Payload/DmIOS.app DmIOS Info.plist dm/launcher.json
+          ls -lh DmIOS-archive.tar.gz
+
+      - name: Upload DmIOS Fast Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DmIOS-archive
+          path: DmIOS-archive.tar.gz
+
       - name: Upload Kirby IPA Artifact
         uses: actions/upload-artifact@v4
         with:
