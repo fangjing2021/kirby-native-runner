@@ -1,0 +1,40 @@
+name: Release Kirby v1.1.62
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    name: Release Kirby IPA Asset
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifact from Build Run
+        uses: actions/download-artifact@v4
+        with:
+          name: KirbyAndTheForgottenLand-ipa
+          run-id: 44883296489
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List files
+        run: ls -lh
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.1.62-ios
+          name: Release v1.1.62-ios
+          body: |
+            Release v1.1.62-ios for Apple iPad Air M3 (Apple M3 GPU, iPadOS 18.7.8).
+            
+            Key Fixes:
+            - Fix boot screen flickering via precise target_ts presentation timing in present_now.
+            - Fix title screen blue block discoloration by preserving Render Target dimensions in support_buffer.
+            - Eliminate Fence 359 / frame 179 AGX GPU PageFault via integer attachment write-masking.
+            - Disable snapshot ping-pong jitter in 30fps baseline mode.
+          files: KirbyAndTheForgottenLand.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
