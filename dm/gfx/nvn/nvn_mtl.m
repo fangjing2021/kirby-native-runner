@@ -7931,6 +7931,11 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         // Components of a written output outside the shader's output map (SPH word 18): the GPU leaves them as they were; Metal writes the whole attachment, those components undefined
         // (the translator stores only the mapped ones). Lichii traced a NaN band above Ocarina of Time's horizon to this; its agl_common depth pass maps output 2's R only
         else if (fs && fs->rf.omap_known && !fsfn && l != 0xff) m &= fs->rf.omap >> (4 * l) & 0xf;
+        if (l != 0xff && mtl_fmt_uint((MTLPixelFormat)k->cfmt[i])) {
+            int is_uint_out = fs && ((d.fragmentFunction == fs->fn_u) ||
+                                     (d.fragmentFunction == fs->fn_m && (fs->mask_m >> l & 1)));
+            if (!is_uint_out) m = 0;   // Float fragment output meeting integer attachment: zero write mask prevents Apple AGX GPU PageFault
+        }
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
         // Integer targets: no blending. Maxwell ignores the blend enable on them; Metal refuses the pipeline (an assertion even without the API validation layer): Luigi's Mansion 3's integer G-buffer (PR #105)
         if (!k->logic && l != 0xff && k->blend_en >> l & 1 && !unwritten && !pf_int_kind(c.pixelFormat)) {   // a logic operation takes the place of blending (lop_key)
@@ -10495,8 +10500,8 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (b->kind == NVN_RB_GMEM) gmem_aid = aid; else gml_taken = 1;
             if (bl && b->kind == NVN_RB_GMEM) PD("B %llu st%d gmem %s", g_stat_pass, nvn_stage, b->rw ? "rw" : "ro");
         } else if (b->kind == NVN_RB_SUPPORT) {   // support_buffer: scale 1.0, BGRA swap 0, active viewport
-            float vw = (S.has_vp && S.vp[0][2] > 0.0f) ? S.vp[0][2] : (g_pass.tw > 0 ? (float)g_pass.tw : 1920.0f);
-            float vh = (S.has_vp && S.vp[0][3] > 0.0f) ? S.vp[0][3] : (g_pass.th > 0 ? (float)g_pass.th : 1080.0f);
+            float vw = g_pass.tw > 0 ? (float)g_pass.tw : (S.has_vp && S.vp[0][2] > 0.0f ? S.vp[0][2] : 1920.0f);
+            float vh = g_pass.th > 0 ? (float)g_pass.th : (S.has_vp && S.vp[0][3] > 0.0f ? S.vp[0][3] : 1080.0f);
             id<MTLBuffer> ab; size_t ao = arena_alloc(2048, &ab);
             uint8_t *p = (uint8_t *)ab.contents + ao;
             memset(p, 0, 2048);
@@ -15726,7 +15731,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         CFTimeInterval tt = d.presentedTime;
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
     }];
-    if ([cb respondsToSelector:@selector(presentDrawable:afterMinimumDuration:)] && period > 0 && target_ts <= 0) {
+    if (target_ts > 0 && [cb respondsToSelector:@selector(presentDrawable:atTime:)]) {
+        [(id<MTLCommandBuffer>)cb presentDrawable:dr atTime:target_ts];
+    } else if ([cb respondsToSelector:@selector(presentDrawable:afterMinimumDuration:)] && period > 0) {
         [(id<MTLCommandBuffer>)cb presentDrawable:dr afterMinimumDuration:period];
     } else if ([cb respondsToSelector:@selector(presentDrawable:)]) {
         [(id<MTLCommandBuffer>)cb presentDrawable:dr];
