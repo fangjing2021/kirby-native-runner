@@ -311,7 +311,13 @@ static void res_add_at(id<MTLAllocation> allocation, int line) { @autoreleasepoo
     { int k = 0; while (k < RS_SITES - 1 && g_rs_site[k].line && g_rs_site[k].line != line) k++; g_rs_site[k].line = line; g_rs_site[k].n++; g_rs_site[k].bytes += r.allocatedSize; }
     [g_res addAllocation:(id<MTLAllocation>)r];
     [g_res_objects addObject:r];
-    g_res_dirty = 1;
+    if (g_res) {
+        uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        [g_res commit];
+        g_rs_commits++;
+        g_rs_commit_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
+    }
+    g_res_dirty = 0;
     pthread_mutex_unlock(&g_res_mu);
 } }
 static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
@@ -3377,7 +3383,13 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         }
     }
     free(part);
+    if (mt) {
+        if (!g_up_texs) g_up_texs = [NSMutableArray array];
+        [g_up_texs addObject:mt];
+    }
     up_flush();
+    res_commit();
+    rec_publish();
     return mt;
 }
 // ---------- Placement sparse textures ----------
@@ -14489,6 +14501,11 @@ static void sub_cut_begin(void) { g_cut_draw0 = g_stat_draw; }
 static int probe_ramp_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_FSTEP_PROBE_RAMP", 1); return m; }
 int mtl_probe_ramp_on(void) { return sw_on(probe_ramp_mode()); }
 static void sub_cut(void) {
+#if TARGET_OS_IPHONE
+    // Segmented submissions share global argument tables (g_vt, g_ft, g_ct) with deferred encoding.
+    // Cutting mid-submission on iOS causes concurrent table updates and AGX GPU PageFaults on segment 0.
+    if (!getenv("DM_NVN_CUT_FORCE")) return;
+#endif
     int n = cut_draws();
     if (!g_cb || g_enc) return;
     if ((!g_cut_copy && (n <= 0 || g_stat_draw - g_cut_draw0 < (uint64_t)n)) || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_rt_merged) return;
