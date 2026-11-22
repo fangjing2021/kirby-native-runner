@@ -4931,6 +4931,28 @@ static void xv_forward(void);
 static int tbdr_on(void);
 static int xv_on(void) { static int off = -1; if (off < 0) { const char *e = getenv("DM_NVN_XV"); off = e && !strcmp(e, "0"); } return !off && tbdr_on(); }
 void mtl_xv_window_tex(uint64_t serial) { if (!xv_present(serial) && g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = serial; }   // Window (swapchain) texture: never enters the ledger
+// Clear a swapchain texture to black at window init time (before the submit thread is set up, so tex_zero_fill cannot be used: it
+// requires on_sub_thread which is set only at the first QueueSubmitCommands). Uses a standalone Metal render pass with MTLLoadActionClear.
+void mtl_window_tex_clear(const void *tex) {
+    const tex_t *t = (const tex_t *)tex;
+    if (!t || !t->serial) return;
+    id<MTLTexture> mt = tex_mtl(t);
+    if (!mt || !(mt.usage & MTLTextureUsageRenderTarget)) return;
+    @autoreleasepool {
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor new];
+        rp.colorAttachments[0].texture = mt;
+        rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+        id<MTLCommandBuffer> cb = [g_q commandBuffer];
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+    }
+    MLOG("window texture clear: serial=%llu %lux%lu → black", (unsigned long long)t->serial,
+         (unsigned long)mt.width, (unsigned long)mt.height);
+}
 void xv_test_counts(int *dc, int *viol) { if (dc) *dc = (int)g_xv_dc; if (viol) *viol = (int)g_xv_viol; }
 static void sd_finish(void);
 // Load elision (fully covering first draw): if the draw that opens the pass can be proven to cover a color attachment in full (first_draw_covers), that attachment's load becomes DontCare -
