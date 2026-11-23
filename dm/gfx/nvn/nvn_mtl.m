@@ -16259,11 +16259,11 @@ static uint64_t snap_take(const tex_t *t) {
     id<MTL4CommandBuffer> cb = [g_dev newCommandBuffer];
     g_snap_cb[k] = cb;
     [cb beginCommandBufferWithAllocator:g_snap_alloc[k]];
-    id ce = [cb respondsToSelector:@selector(blitCommandEncoder)] ? [cb blitCommandEncoder] : [cb computeCommandEncoder];
+    id ce = enc_b_begin(cb);
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];   // after the frame's work and the slot's last blit to the screen
     [ce copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(src.width, src.height, 1) toTexture:dst destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // the game's next writes to its texture come after the copy
-    [ce endEncoding]; [cb endCommandBuffer];
+    enc_b_end(ce); [cb endCommandBuffer];
     uint64_t v = ++g_snap_v;
     if (rec_on() && g_rb_started) {   // a block of the encode thread's queue, behind the frame's work (see above)
         if (on_sub_thread()) rec_publish();   // what the submitting thread recorded outside a submission goes first

@@ -693,6 +693,7 @@ static id<MTLCommandQueue> s_compat_queue;
 
 @interface DmCbFenceTracker : NSObject {
 @public
+    id<MTLDevice> _dev;
     NSMutableArray<id<MTLFence>> *_fences;
     int _nextUpdateIdx;
     int _readyWaitIdx;
@@ -708,6 +709,7 @@ static id<MTLCommandQueue> s_compat_queue;
 @implementation DmCbFenceTracker
 - (instancetype)initWithDevice:(id<MTLDevice>)dev {
     if ((self = [super init])) {
+        _dev = dev;
         _fences = [NSMutableArray arrayWithCapacity:32];
         for (int i = 0; i < 32; i++) {
             id<MTLFence> f = [dev newFence];
@@ -723,8 +725,10 @@ static id<MTLCommandQueue> s_compat_queue;
 }
 
 - (id<MTLFence>)allocUpdateFenceOnDevice:(id<MTLDevice>)dev {
+    if (!_dev && dev) _dev = dev;
     if (_nextUpdateIdx >= (int)_fences.count) {
-        id<MTLFence> f = dev ? [dev newFence] : nil;
+        id<MTLDevice> d = _dev ? _dev : dev;
+        id<MTLFence> f = d ? [d newFence] : nil;
         if (f) [_fences addObject:f];
         else if (_fences.count > 0) return _fences[_fences.count - 1];
         else return nil;
