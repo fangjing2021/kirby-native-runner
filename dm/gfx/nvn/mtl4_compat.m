@@ -757,9 +757,11 @@ static char kFenceKey;
     id<MTLFence> _handoffFence;
     id<MTLFence> _pendingWaitFence;
     id<MTL4ArgumentTable> _argTable;
+    DmCompatArgumentTable *_boundTable;
     id<MTLComputePipelineState> _pso;
     NSString *_label;
     BOOL _ended;
+    BOOL _handoffPending;
 }
 
 - (instancetype)initWithCommandBuffer:(id<MTLCommandBuffer>)cb {
@@ -770,9 +772,11 @@ static char kFenceKey;
         _handoffFence = nil;
         _pendingWaitFence = nil;
         _argTable = nil;
+        _boundTable = nil;
         _pso = nil;
         _label = nil;
         _ended = NO;
+        _handoffPending = NO;
     }
     return self;
 }
@@ -804,14 +808,18 @@ static char kFenceKey;
     if (_blit) return;
     if (_compute) {
         if (!_handoffFence) _handoffFence = [_cb.device newFence];
-        if (_handoffFence) [_compute updateFence:_handoffFence];
+        if (_handoffFence) {
+            [_compute updateFence:_handoffFence];
+            _handoffPending = YES;
+        }
         [_compute endEncoding];
         _compute = nil;
     }
     _blit = [_cb blitCommandEncoder];
     if (_label) _blit.label = _label;
-    if (_handoffFence) {
+    if (_handoffPending && _handoffFence) {
         [_blit waitForFence:_handoffFence];
+        _handoffPending = NO;
     }
     if (_pendingWaitFence) {
         [_blit waitForFence:_pendingWaitFence];
@@ -824,14 +832,18 @@ static char kFenceKey;
     if (_compute) return;
     if (_blit) {
         if (!_handoffFence) _handoffFence = [_cb.device newFence];
-        if (_handoffFence) [_blit updateFence:_handoffFence];
+        if (_handoffFence) {
+            [_blit updateFence:_handoffFence];
+            _handoffPending = YES;
+        }
         [_blit endEncoding];
         _blit = nil;
     }
     _compute = [_cb computeCommandEncoder];
     if (_label) _compute.label = _label;
-    if (_handoffFence) {
+    if (_handoffPending && _handoffFence) {
         [_compute waitForFence:_handoffFence];
+        _handoffPending = NO;
     }
     if (_pendingWaitFence) {
         [_compute waitForFence:_pendingWaitFence];
@@ -840,7 +852,9 @@ static char kFenceKey;
     if (_pso) {
         [_compute setComputePipelineState:_pso];
     }
-    if (_argTable) {
+    if (_boundTable) {
+        [_boundTable bindToComputeEncoder:_compute];
+    } else if (_argTable) {
         DmCompatArgumentTable *t = unwrap_compat_table(_argTable);
         if (t) [t bindToComputeEncoder:_compute];
     }
@@ -856,6 +870,7 @@ static char kFenceKey;
 - (void)setArgumentTable:(id<MTL4ArgumentTable>)table {
     _argTable = table;
     DmCompatArgumentTable *t = unwrap_compat_table(table);
+    _boundTable = t;
     if (t) {
         [t bindToComputeEncoder:self];
     }
@@ -939,6 +954,29 @@ static char kFenceKey;
 }
 
 - (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
+    if (!sourceTexture || !destinationTexture) return;
+    if (sourceOrigin.x + sourceSize.width > sourceTexture.width ||
+        sourceOrigin.y + sourceSize.height > sourceTexture.height ||
+        destinationOrigin.x + sourceSize.width > destinationTexture.width ||
+        destinationOrigin.y + sourceSize.height > destinationTexture.height) {
+        static int warn_bounds = 0;
+        if (warn_bounds++ < 10) {
+            fprintf(stderr, "[mtl3-blit-err] copyFromTexture out of bounds: src %lux%lu at (%lu,%lu) in %lux%lu, dst at (%lu,%lu) in %lux%lu\n",
+                    (unsigned long)sourceSize.width, (unsigned long)sourceSize.height,
+                    (unsigned long)sourceOrigin.x, (unsigned long)sourceOrigin.y,
+                    (unsigned long)sourceTexture.width, (unsigned long)sourceTexture.height,
+                    (unsigned long)destinationOrigin.x, (unsigned long)destinationOrigin.y,
+                    (unsigned long)destinationTexture.width, (unsigned long)destinationTexture.height);
+        }
+        return;
+    }
+    if (sourceTexture.pixelFormat != destinationTexture.pixelFormat) {
+        static int warn_fmt = 0;
+        if (warn_fmt++ < 10) {
+            fprintf(stderr, "[mtl3-blit-err] copyFromTexture format mismatch: src fmt %lu != dst fmt %lu\n",
+                    (unsigned long)sourceTexture.pixelFormat, (unsigned long)destinationTexture.pixelFormat);
+        }
+    }
     [self ensureBlit];
     [_blit copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toTexture:destinationTexture destinationSlice:destinationSlice destinationLevel:destinationLevel destinationOrigin:destinationOrigin];
 }
@@ -956,6 +994,7 @@ static char kFenceKey;
 - (void)barrierAfterStages:(NSUInteger)after beforeQueueStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
     if (_ended) return;
+    if (!_compute && !_blit) return;
     DmCbFenceTracker *tracker = objc_getAssociatedObject(_cb, &kFenceKey);
     if (!tracker && [_cb respondsToSelector:@selector(device)]) {
         id dev = [_cb device];
@@ -976,8 +1015,6 @@ static char kFenceKey;
             [_compute updateFence:f];
         } else if (_blit) {
             [_blit updateFence:f];
-        } else {
-            return;
         }
         tracker->_hasUpdate = YES;
         tracker->_lastUpdatingEncoder = (__bridge void *)self;
@@ -1136,16 +1173,24 @@ static char kFenceKey;
     BOOL dispatched = NO;
     for (NSUInteger i = 0; i < count; i++) {
         id b = buffers[i];
-        if (i + 1 == count && handlers.count > 0 && [b respondsToSelector:@selector(addCompletedHandler:)]) {
-            dispatched = YES;
+        if ([b respondsToSelector:@selector(addCompletedHandler:)]) {
+            BOOL isLast = (i + 1 == count);
+            BOOL hasHandlers = (isLast && handlers.count > 0);
+            if (hasHandlers) dispatched = YES;
             [b addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-                @autoreleasepool {
-                    MTL4CommitFeedbackImpl *f = [MTL4CommitFeedbackImpl new];
-                    f.error = cb.error;
-                    f.GPUStartTime = cb.GPUStartTime;
-                    f.GPUEndTime = cb.GPUEndTime;
-                    for (void (^h)(id<MTL4CommitFeedback>) in handlers) {
-                        h(f);
+                if (cb.status == MTLCommandBufferStatusError || cb.error) {
+                    fprintf(stderr, "[mtl3-cb-err] command buffer %p error (status=%ld): %s\n",
+                            cb, (long)cb.status, cb.error ? cb.error.localizedDescription.UTF8String : "unknown error");
+                }
+                if (hasHandlers) {
+                    @autoreleasepool {
+                        MTL4CommitFeedbackImpl *f = [MTL4CommitFeedbackImpl new];
+                        f.error = cb.error;
+                        f.GPUStartTime = cb.GPUStartTime;
+                        f.GPUEndTime = cb.GPUEndTime;
+                        for (void (^h)(id<MTL4CommitFeedback>) in handlers) {
+                            h(f);
+                        }
                     }
                 }
             }];

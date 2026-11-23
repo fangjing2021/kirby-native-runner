@@ -766,7 +766,7 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     nvn_ctl_lens(sd->control, &nctl, &ncode);
     if (!nctl || nctl > (1u << 20)) return 0;
     int code = sd->data && ncode && ncode < (1u << 24);
-    if (code && !mtl_addr_known(sd->data, ncode)) return 0;
+    if (code && mapped && !mtl_addr_known(sd->data, ncode)) return 0;
     if (mapped && !code) return 0;   // its code in a memory pool; the pool is not made resident for that (the GPU runs the translated shader)
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
     // Profile key shader_key_skip: bytes of the control section hashed as zeros (shader_split.py key_ctl). Batman: Arkham Knight's engine shares one control section among shaders whose

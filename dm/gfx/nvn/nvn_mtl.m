@@ -5789,12 +5789,12 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
     int fd = open(path.fileSystemRepresentation, O_RDONLY); struct stat st;
     if (fd < 0) {   // not in the folder: the library's image, whose one descriptor is shared, and only this file's pages are mapped
         int open_errno = errno; romfs_img *img; const img_ent *x = msl_image_file(path, &img); msl_map f;
-        if (x && msl_image_map(img, x, &f)) {
+        if (x && msl_image_map(img, x, &f) && f.data && f.size > 0) {
             t_lib_layer = memmem(f.data, f.size, "render_target_array_index", 25) != NULL;
-            void *base = f.base; size_t base_len = f.base_len;
+            msl_map f_copy = f;
             dispatch_data_t d = dispatch_data_create(f.data, f.size, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                if (base_len) munmap(base, base_len);
-                else free(base);
+                msl_map m = f_copy;
+                msl_image_unmap(&m);
             });
             return [g_dev newLibraryWithData:d error:err];
         }
