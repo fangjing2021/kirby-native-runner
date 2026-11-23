@@ -404,6 +404,7 @@ static id<MTLTexture> rh_texture(const tex_t *t, MTLTextureDescriptor *d) {
     atomic_fetch_add(reused ? &g_rh_reused : &g_rh_made, 1);
     return mt;
 }
+static void res_commit(void);
 // When a submission begins: heaps that waited RH_IDLE_NS, and the oldest past RH_CAP bytes, leave the residency set and are freed
 static void rh_trim(void) {
     if (!g_rh_n) return;
@@ -5742,6 +5743,7 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
         int open_errno = errno; romfs_img *img; const img_ent *x = msl_image_file(path, &img); msl_map f;
         if (x && msl_image_map(img, x, &f)) {
             t_lib_layer = memmem(f.data, f.size, "render_target_array_index", 25) != NULL;
+            void *base = f.base; size_t base_len = f.base_len;
             dispatch_data_t d = dispatch_data_create(f.data, f.size, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                 if (base_len) munmap(base, base_len);
                 else free(base);
