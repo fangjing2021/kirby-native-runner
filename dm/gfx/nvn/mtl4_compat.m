@@ -693,20 +693,25 @@ static id<MTLCommandQueue> s_compat_queue;
 
 @interface DmCbFenceTracker : NSObject {
 @public
-    id<MTLFence> _fences[32];
+    NSMutableArray<id<MTLFence>> *_fences;
     int _nextUpdateIdx;
     int _readyWaitIdx;
     BOOL _hasUpdate;
     void *_lastUpdatingEncoder;
     void *_lastWaitingEncoder;
 }
+- (instancetype)initWithDevice:(id<MTLDevice>)dev;
+- (id<MTLFence>)allocUpdateFenceOnDevice:(id<MTLDevice>)dev;
+- (id<MTLFence>)currentWaitFence;
 @end
 
 @implementation DmCbFenceTracker
 - (instancetype)initWithDevice:(id<MTLDevice>)dev {
     if ((self = [super init])) {
+        _fences = [NSMutableArray arrayWithCapacity:32];
         for (int i = 0; i < 32; i++) {
-            _fences[i] = [dev newFence];
+            id<MTLFence> f = [dev newFence];
+            if (f) [_fences addObject:f];
         }
         _nextUpdateIdx = 0;
         _readyWaitIdx = -1;
@@ -716,9 +721,332 @@ static id<MTLCommandQueue> s_compat_queue;
     }
     return self;
 }
+
+- (id<MTLFence>)allocUpdateFenceOnDevice:(id<MTLDevice>)dev {
+    if (_nextUpdateIdx >= (int)_fences.count) {
+        id<MTLFence> f = dev ? [dev newFence] : nil;
+        if (f) [_fences addObject:f];
+        else if (_fences.count > 0) return _fences[_fences.count - 1];
+        else return nil;
+    }
+    int uIdx = _nextUpdateIdx++;
+    _readyWaitIdx = uIdx;
+    return _fences[uIdx];
+}
+
+- (id<MTLFence>)currentWaitFence {
+    if (_readyWaitIdx >= 0 && _readyWaitIdx < (int)_fences.count) {
+        return _fences[_readyWaitIdx];
+    }
+    return nil;
+}
 @end
 
 static char kFenceKey;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wprotocol"
+@implementation DmCompatComputeBlitEncoder {
+    id<MTLCommandBuffer> _cb;
+    id<MTLComputeCommandEncoder> _compute;
+    id<MTLBlitCommandEncoder> _blit;
+    id<MTLFence> _handoffFence;
+    id<MTLFence> _pendingWaitFence;
+    id<MTL4ArgumentTable> _argTable;
+    id<MTLComputePipelineState> _pso;
+    NSString *_label;
+    BOOL _ended;
+}
+
+- (instancetype)initWithCommandBuffer:(id<MTLCommandBuffer>)cb {
+    if ((self = [super init])) {
+        _cb = cb;
+        _compute = nil;
+        _blit = nil;
+        _handoffFence = nil;
+        _pendingWaitFence = nil;
+        _argTable = nil;
+        _pso = nil;
+        _label = nil;
+        _ended = NO;
+    }
+    return self;
+}
+
+- (MTLDispatchType)dispatchType {
+    return MTLDispatchTypeSerial;
+}
+
+- (id<MTLDevice>)device {
+    return (id<MTLDevice>)_cb.device;
+}
+
+- (id<MTLCommandBuffer>)commandBuffer {
+    return _cb;
+}
+
+- (NSString *)label {
+    return _label;
+}
+
+- (void)setLabel:(NSString *)label {
+    _label = [label copy];
+    if (_compute) _compute.label = label;
+    if (_blit) _blit.label = label;
+}
+
+- (void)ensureBlit {
+    if (_ended) return;
+    if (_blit) return;
+    if (_compute) {
+        if (!_handoffFence) _handoffFence = [_cb.device newFence];
+        if (_handoffFence) [_compute updateFence:_handoffFence];
+        [_compute endEncoding];
+        _compute = nil;
+    }
+    _blit = [_cb blitCommandEncoder];
+    if (_label) _blit.label = _label;
+    if (_handoffFence) {
+        [_blit waitForFence:_handoffFence];
+    }
+    if (_pendingWaitFence) {
+        [_blit waitForFence:_pendingWaitFence];
+        _pendingWaitFence = nil;
+    }
+}
+
+- (void)ensureCompute {
+    if (_ended) return;
+    if (_compute) return;
+    if (_blit) {
+        if (!_handoffFence) _handoffFence = [_cb.device newFence];
+        if (_handoffFence) [_blit updateFence:_handoffFence];
+        [_blit endEncoding];
+        _blit = nil;
+    }
+    _compute = [_cb computeCommandEncoder];
+    if (_label) _compute.label = _label;
+    if (_handoffFence) {
+        [_compute waitForFence:_handoffFence];
+    }
+    if (_pendingWaitFence) {
+        [_compute waitForFence:_pendingWaitFence];
+        _pendingWaitFence = nil;
+    }
+    if (_pso) {
+        [_compute setComputePipelineState:_pso];
+    }
+    if (_argTable) {
+        DmCompatArgumentTable *t = unwrap_compat_table(_argTable);
+        if (t) [t bindToComputeEncoder:_compute];
+    }
+}
+
+- (void)setComputePipelineState:(id<MTLComputePipelineState>)state {
+    _pso = state;
+    if (_compute) {
+        [_compute setComputePipelineState:state];
+    }
+}
+
+- (void)setArgumentTable:(id<MTL4ArgumentTable>)table {
+    _argTable = table;
+    DmCompatArgumentTable *t = unwrap_compat_table(table);
+    if (t) {
+        [t bindToComputeEncoder:self];
+    }
+    if (_compute && t) {
+        [t bindToComputeEncoder:_compute];
+    }
+}
+
+- (void)setBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index {
+    [self ensureCompute];
+    [_compute setBuffer:buffer offset:offset atIndex:index];
+}
+
+- (void)setTexture:(id<MTLTexture>)texture atIndex:(NSUInteger)index {
+    [self ensureCompute];
+    [_compute setTexture:texture atIndex:index];
+}
+
+- (void)setSamplerState:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index {
+    [self ensureCompute];
+    [_compute setSamplerState:sampler atIndex:index];
+}
+
+- (void)dispatchThreadgroups:(MTLSize)threadgroupsPerGrid threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    [self ensureCompute];
+    [DmCompatArgumentTable ensureArgsForEncoder:_compute];
+    [_compute dispatchThreadgroups:threadgroupsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+}
+
+- (void)dispatchThreadgroupsWithIndirectBuffer:(id<MTLBuffer>)indirectBuffer indirectBufferOffset:(NSUInteger)indirectBufferOffset threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    [self ensureCompute];
+    [DmCompatArgumentTable ensureArgsForEncoder:_compute];
+    [_compute dispatchThreadgroupsWithIndirectBuffer:indirectBuffer indirectBufferOffset:indirectBufferOffset threadsPerThreadgroup:threadsPerThreadgroup];
+}
+
+- (void)dispatchThreads:(MTLSize)threadsPerGrid threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    [self ensureCompute];
+    [DmCompatArgumentTable ensureArgsForEncoder:_compute];
+    if ([_compute respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
+        [_compute dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+    }
+}
+
+- (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    if (!indirectBuffer) return;
+    [self ensureCompute];
+    [DmCompatArgumentTable ensureArgsForEncoder:_compute];
+    void *ind_buf = NULL;
+    uint64_t ind_off = 0;
+    if ((mtl_gpu_to_buf(indirectBuffer, 12, &ind_buf, &ind_off) || mtl_addr(indirectBuffer, 12, &ind_buf, &ind_off)) && ind_buf) {
+        id<MTLBuffer> mbuf = (__bridge id<MTLBuffer>)ind_buf;
+        if (ind_off + 12 <= mbuf.length && (ind_off & 3) == 0) {
+            [_compute dispatchThreadgroupsWithIndirectBuffer:mbuf indirectBufferOffset:ind_off threadsPerThreadgroup:threadsPerThreadgroup];
+        }
+    }
+}
+
+- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset size:(NSUInteger)size {
+    [self ensureBlit];
+    [_blit copyFromBuffer:sourceBuffer sourceOffset:sourceOffset toBuffer:destinationBuffer destinationOffset:destinationOffset size:size];
+}
+
+- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset sourceBytesPerRow:(NSUInteger)sourceBytesPerRow sourceBytesPerImage:(NSUInteger)sourceBytesPerImage sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
+    [self ensureBlit];
+    [_blit copyFromBuffer:sourceBuffer sourceOffset:sourceOffset sourceBytesPerRow:sourceBytesPerRow sourceBytesPerImage:sourceBytesPerImage sourceSize:sourceSize toTexture:destinationTexture destinationSlice:destinationSlice destinationLevel:destinationLevel destinationOrigin:destinationOrigin];
+}
+
+- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset sourceBytesPerRow:(NSUInteger)sourceBytesPerRow sourceBytesPerImage:(NSUInteger)sourceBytesPerImage sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin options:(NSUInteger)options {
+    [self ensureBlit];
+    [_blit copyFromBuffer:sourceBuffer sourceOffset:sourceOffset sourceBytesPerRow:sourceBytesPerRow sourceBytesPerImage:sourceBytesPerImage sourceSize:sourceSize toTexture:destinationTexture destinationSlice:destinationSlice destinationLevel:destinationLevel destinationOrigin:destinationOrigin options:(MTLBlitOption)options];
+}
+
+- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset destinationBytesPerRow:(NSUInteger)destinationBytesPerRow destinationBytesPerImage:(NSUInteger)destinationBytesPerImage {
+    [self ensureBlit];
+    [_blit copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toBuffer:destinationBuffer destinationOffset:destinationOffset destinationBytesPerRow:destinationBytesPerRow destinationBytesPerImage:destinationBytesPerImage];
+}
+
+- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset destinationBytesPerRow:(NSUInteger)destinationBytesPerRow destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUInteger)options {
+    [self ensureBlit];
+    [_blit copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toBuffer:destinationBuffer destinationOffset:destinationOffset destinationBytesPerRow:destinationBytesPerRow destinationBytesPerImage:destinationBytesPerImage options:(MTLBlitOption)options];
+}
+
+- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
+    [self ensureBlit];
+    [_blit copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toTexture:destinationTexture destinationSlice:destinationSlice destinationLevel:destinationLevel destinationOrigin:destinationOrigin];
+}
+
+- (void)fillBuffer:(id<MTLBuffer>)buffer range:(NSRange)range value:(uint8_t)value {
+    [self ensureBlit];
+    [_blit fillBuffer:buffer range:range value:value];
+}
+
+- (void)generateMipmapsForTexture:(id<MTLTexture>)texture {
+    [self ensureBlit];
+    [_blit generateMipmapsForTexture:texture];
+}
+
+- (void)barrierAfterStages:(NSUInteger)after beforeQueueStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
+    (void)after; (void)before; (void)vis;
+    if (_ended) return;
+    DmCbFenceTracker *tracker = objc_getAssociatedObject(_cb, &kFenceKey);
+    if (!tracker && [_cb respondsToSelector:@selector(device)]) {
+        id dev = [_cb device];
+        if (dev) {
+            tracker = [[DmCbFenceTracker alloc] initWithDevice:dev];
+            if (tracker) {
+                objc_setAssociatedObject(_cb, &kFenceKey, tracker, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+    }
+    if (!tracker) return;
+    if (tracker->_hasUpdate && tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
+
+    id dev = [_cb respondsToSelector:@selector(device)] ? [_cb device] : nil;
+    id<MTLFence> f = [tracker allocUpdateFenceOnDevice:dev];
+    if (f) {
+        if (_compute) {
+            [_compute updateFence:f];
+        } else if (_blit) {
+            [_blit updateFence:f];
+        } else {
+            return;
+        }
+        tracker->_hasUpdate = YES;
+        tracker->_lastUpdatingEncoder = (__bridge void *)self;
+        tracker->_lastWaitingEncoder = NULL;
+    }
+}
+
+- (void)barrierAfterQueueStages:(NSUInteger)after beforeStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
+    (void)after; (void)before; (void)vis;
+    if (_ended) return;
+    DmCbFenceTracker *tracker = objc_getAssociatedObject(_cb, &kFenceKey);
+    if (!tracker || !tracker->_hasUpdate) return;
+    if (tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
+    if (tracker->_lastWaitingEncoder == (__bridge void *)self) return;
+
+    id<MTLFence> f = [tracker currentWaitFence];
+    if (f) {
+        if (_compute) {
+            [_compute waitForFence:f];
+        } else if (_blit) {
+            [_blit waitForFence:f];
+        } else {
+            _pendingWaitFence = f;
+        }
+        tracker->_lastWaitingEncoder = (__bridge void *)self;
+    }
+}
+
+- (void)barrierAfterEncoderStages:(NSUInteger)after beforeEncoderStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
+    (void)vis;
+    if (_compute && [_compute respondsToSelector:@selector(memoryBarrierWithScope:)]) {
+        [_compute memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
+    }
+}
+
+- (void)writeTimestampWithGranularity:(NSUInteger)granularity intoHeap:(id)heap atIndex:(NSUInteger)index {
+    (void)granularity; (void)heap; (void)index;
+}
+
+- (void)endEncoding {
+    if (_ended) return;
+    _ended = YES;
+    if (_compute) {
+        [_compute endEncoding];
+        _compute = nil;
+    }
+    if (_blit) {
+        [_blit endEncoding];
+        _blit = nil;
+    }
+    [DmCompatArgumentTable notifyEncoderEnded:self];
+}
+
+- (id)forwardingTargetForSelector:(SEL)aSelector {
+    [self ensureCompute];
+    return _compute;
+}
+
+- (BOOL)respondsToSelector:(SEL)aSelector {
+    if ([super respondsToSelector:aSelector]) return YES;
+    struct objc_method_description desc = protocol_getMethodDescription(@protocol(MTLComputeCommandEncoder), aSelector, YES, YES);
+    if (desc.name != NULL) return YES;
+    desc = protocol_getMethodDescription(@protocol(MTLComputeCommandEncoder), aSelector, NO, YES);
+    if (desc.name != NULL) return YES;
+    desc = protocol_getMethodDescription(@protocol(MTLBlitCommandEncoder), aSelector, YES, YES);
+    if (desc.name != NULL) return YES;
+    desc = protocol_getMethodDescription(@protocol(MTLBlitCommandEncoder), aSelector, NO, YES);
+    if (desc.name != NULL) return YES;
+    return NO;
+}
+
+@end
+#pragma clang diagnostic pop
 
 @implementation NSObject (MTL4CompatObject)
 - (void)beginCommandBufferWithAllocator:(id)allocator { (void)allocator; }
@@ -741,8 +1069,8 @@ static char kFenceKey;
     if (!tracker) return;
     if (tracker->_hasUpdate && tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
     
-    int uIdx = tracker->_nextUpdateIdx;
-    id<MTLFence> f = tracker->_fences[uIdx];
+    id dev = [cb respondsToSelector:@selector(device)] ? [cb device] : nil;
+    id<MTLFence> f = [tracker allocUpdateFenceOnDevice:dev];
     if (f) {
         if ([self respondsToSelector:@selector(updateFence:afterStages:)]) {
             [(id<MTLRenderCommandEncoder>)self updateFence:f afterStages:MTLRenderStageFragment];
@@ -751,11 +1079,9 @@ static char kFenceKey;
         } else {
             return;
         }
-        tracker->_readyWaitIdx = uIdx;
         tracker->_hasUpdate = YES;
         tracker->_lastUpdatingEncoder = (__bridge void *)self;
         tracker->_lastWaitingEncoder = NULL;
-        tracker->_nextUpdateIdx = (uIdx + 1) % 32;
     }
 }
 - (void)barrierAfterEncoderStages:(NSUInteger)after beforeEncoderStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
@@ -775,8 +1101,7 @@ static char kFenceKey;
     if (tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
     if (tracker->_lastWaitingEncoder == (__bridge void *)self) return;
     
-    int wIdx = tracker->_readyWaitIdx;
-    id<MTLFence> f = tracker->_fences[wIdx];
+    id<MTLFence> f = [tracker currentWaitFence];
     if (f) {
         if ([self respondsToSelector:@selector(waitForFence:beforeStages:)]) {
             [(id<MTLRenderCommandEncoder>)self waitForFence:f beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
@@ -964,66 +1289,6 @@ static char kFenceKey;
 - (id)newComputePipelineStateWithDescriptor:(id)descriptor error:(NSError **)error {
     if (error) *error = [NSError errorWithDomain:@"MTL4" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Archive not supported on iOS 18"}];
     return nil;
-}
-- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset size:(NSUInteger)size {
-    if ([sourceBuffer respondsToSelector:@selector(contents)] && sourceBuffer.contents &&
-        [destinationBuffer respondsToSelector:@selector(contents)] && destinationBuffer.contents) {
-        memcpy((uint8_t *)destinationBuffer.contents + destinationOffset, (const uint8_t *)sourceBuffer.contents + sourceOffset, size);
-    }
-}
-- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset sourceBytesPerRow:(NSUInteger)sourceBytesPerRow sourceBytesPerImage:(NSUInteger)sourceBytesPerImage sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
-    if ([destinationTexture respondsToSelector:@selector(storageMode)] && destinationTexture.storageMode != MTLStorageModeShared) {
-        return;
-    }
-    if ([sourceBuffer respondsToSelector:@selector(contents)] && sourceBuffer.contents) {
-        const uint8_t *src = (const uint8_t *)sourceBuffer.contents + sourceOffset;
-        MTLRegion region = MTLRegionMake3D(destinationOrigin.x, destinationOrigin.y, destinationOrigin.z, sourceSize.width, sourceSize.height, sourceSize.depth);
-        [destinationTexture replaceRegion:region mipmapLevel:destinationLevel slice:destinationSlice withBytes:src bytesPerRow:sourceBytesPerRow bytesPerImage:sourceBytesPerImage];
-    }
-}
-- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset sourceBytesPerRow:(NSUInteger)sourceBytesPerRow sourceBytesPerImage:(NSUInteger)sourceBytesPerImage sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin options:(NSUInteger)options {
-    (void)options;
-    [self copyFromBuffer:sourceBuffer sourceOffset:sourceOffset sourceBytesPerRow:sourceBytesPerRow sourceBytesPerImage:sourceBytesPerImage sourceSize:sourceSize toTexture:destinationTexture destinationSlice:destinationSlice destinationLevel:destinationLevel destinationOrigin:destinationOrigin];
-}
-- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset destinationBytesPerRow:(NSUInteger)destinationBytesPerRow destinationBytesPerImage:(NSUInteger)destinationBytesPerImage {
-    if ([sourceTexture respondsToSelector:@selector(storageMode)] && sourceTexture.storageMode != MTLStorageModeShared) {
-        return;
-    }
-    if ([destinationBuffer respondsToSelector:@selector(contents)] && destinationBuffer.contents) {
-        uint8_t *dst = (uint8_t *)destinationBuffer.contents + destinationOffset;
-        MTLRegion region = MTLRegionMake3D(sourceOrigin.x, sourceOrigin.y, sourceOrigin.z, sourceSize.width, sourceSize.height, sourceSize.depth);
-        [sourceTexture getBytes:dst bytesPerRow:destinationBytesPerRow bytesPerImage:destinationBytesPerImage fromRegion:region mipmapLevel:sourceLevel slice:sourceSlice];
-    }
-}
-- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset destinationBytesPerRow:(NSUInteger)destinationBytesPerRow destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUInteger)options {
-    (void)options;
-    [self copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toBuffer:destinationBuffer destinationOffset:destinationOffset destinationBytesPerRow:destinationBytesPerRow destinationBytesPerImage:destinationBytesPerImage];
-}
-- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
-    if (([sourceTexture respondsToSelector:@selector(storageMode)] && sourceTexture.storageMode != MTLStorageModeShared) ||
-        ([destinationTexture respondsToSelector:@selector(storageMode)] && destinationTexture.storageMode != MTLStorageModeShared)) {
-        return;
-    }
-    if ([sourceTexture respondsToSelector:@selector(getBytes:bytesPerRow:bytesPerImage:fromRegion:mipmapLevel:slice:)] &&
-        [destinationTexture respondsToSelector:@selector(replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:)]) {
-        NSUInteger bpp = 4;
-        NSUInteger bytesPerRow = sourceSize.width * bpp;
-        NSUInteger bytesPerImage = bytesPerRow * sourceSize.height;
-        NSUInteger depth = sourceSize.depth > 0 ? sourceSize.depth : 1;
-        void *tmp = malloc(bytesPerImage * depth);
-        if (tmp) {
-            MTLRegion sreg = MTLRegionMake3D(sourceOrigin.x, sourceOrigin.y, sourceOrigin.z, sourceSize.width, sourceSize.height, depth);
-            [sourceTexture getBytes:tmp bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage fromRegion:sreg mipmapLevel:sourceLevel slice:sourceSlice];
-            MTLRegion dreg = MTLRegionMake3D(destinationOrigin.x, destinationOrigin.y, destinationOrigin.z, sourceSize.width, sourceSize.height, depth);
-            [destinationTexture replaceRegion:dreg mipmapLevel:destinationLevel slice:destinationSlice withBytes:tmp bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage];
-            free(tmp);
-        }
-    }
-}
-- (void)fillBuffer:(id<MTLBuffer>)buffer range:(NSRange)range value:(uint8_t)value {
-    if ([buffer respondsToSelector:@selector(contents)] && buffer.contents) {
-        memset((uint8_t *)buffer.contents + range.location, value, range.length);
-    }
 }
 - (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
     if (!indirectBuffer) return;

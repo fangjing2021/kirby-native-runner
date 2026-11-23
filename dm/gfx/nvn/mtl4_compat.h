@@ -77,6 +77,10 @@ int mtl_gpu_to_buf(uint64_t gpu_addr, uint64_t len, void **buf, uint64_t *off);
 - (void)fillBuffer:(id<MTLBuffer>)buffer range:(NSRange)range value:(uint8_t)value;
 @end
 
+@interface DmCompatComputeBlitEncoder : NSObject <MTL4ComputeCommandEncoder>
+- (instancetype)initWithCommandBuffer:(id<MTLCommandBuffer>)cb;
+@end
+
 @protocol MTL4RenderCommandEncoder <MTLRenderCommandEncoder, MTL4CommandEncoder>
 - (void)setArgumentTable:(id<MTL4ArgumentTable>)table atStages:(MTLRenderStages)stages;
 - (void)drawMeshThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerObjectThreadgroup:(MTLSize)threadsPerObject threadsPerMeshThreadgroup:(MTLSize)threadsPerMesh;

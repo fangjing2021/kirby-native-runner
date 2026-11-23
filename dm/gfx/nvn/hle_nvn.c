@@ -761,18 +761,22 @@ void nvn_ctl_lens(const void *control, uint32_t *nctl, uint32_t *ncode) {
     *nctl = own >= 0x760 && own < 0x880 ? own : 0x880;
 }
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
-    uint32_t ncode = 0, nctl;
-    if (!sd->control) return 0;
+    uint32_t ncode = 0, nctl = 0;
+    if (!sd || !sd->control || !out) return 0;
     nvn_ctl_lens(sd->control, &nctl, &ncode);
+    if (!nctl || nctl > (1u << 20)) return 0;
     int code = sd->data && ncode && ncode < (1u << 24);
-    if (mapped && !(code && mtl_addr_known(sd->data, ncode))) return 0;   // its code in a memory pool; the pool is not made resident for that (the GPU runs the translated shader)
+    if (code && !mtl_addr_known(sd->data, ncode)) return 0;
+    if (mapped && !code) return 0;   // its code in a memory pool; the pool is not made resident for that (the GPU runs the translated shader)
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
     // Profile key shader_key_skip: bytes of the control section hashed as zeros (shader_split.py key_ctl). Batman: Arkham Knight's engine shares one control section among shaders whose
     // sections differ only in GLSLC's compile information (+0x778..+0x791, +0x7d0..+0x7e7): it hands a program the section of an earlier shader with the same rest, so the bytes there name another shader
     if (nvn2_ctl(sd->control)) {
+        if (nctl < NVN2_KEY_CTL) return 0;
         uint8_t ctl[NVN2_KEY_CTL]; memcpy(ctl, sd->control, NVN2_KEY_CTL); memset(ctl + 0x30, 0, 4);
         CC_SHA256_Update(&hc, ctl, NVN2_KEY_CTL);
     } else if (DM_GAME_SHADER_KEY_SKIP_LEN && DM_GAME_SHADER_KEY_SKIP_OFF + DM_GAME_SHADER_KEY_SKIP_LEN <= nctl) {
+        if (nctl > 0x880) return 0;
         uint8_t ctl[0x880]; memcpy(ctl, sd->control, nctl); memset(ctl + DM_GAME_SHADER_KEY_SKIP_OFF, 0, DM_GAME_SHADER_KEY_SKIP_LEN);
         CC_SHA256_Update(&hc, ctl, nctl);
     } else CC_SHA256_Update(&hc, sd->control, nctl);
@@ -790,7 +794,7 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
 }
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;
-    if (n < 0 || n > 6) { LOG("[RED] ProgramSetShaders stage count %d", n); return 0; }
+    if (!p || !sd || n < 0 || n > 6) { LOG("[RED] ProgramSetShaders stage count %d", n); return 0; }
     pthread_mutex_lock(&g_sub_mu); mtl_prog_release(o); pthread_mutex_unlock(&g_sub_mu);
     o->nstage = n; memcpy(o->sd, sd, n * sizeof *sd); o->serial = nvn_new_serial();
     // The keys are computed here (see prog_key in nvn_obj.h): the control section is only guaranteed valid during this call; the code area lives in a memory pool and stays valid while the program is in use
@@ -798,6 +802,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     static const char *trace; static int trace_init;
     if (!trace_init) { trace = getenv("DM_NVN_PROGTRACE"); trace_init = 1; }
     prog_keys_t *k = pk_get(o->serial);   // a new serial: a new record
+    if (!k) return 0;
     for (int i = 0; i < n; i++) {
         if (keys_hash(&sd[i], 1, k->key[i])) k->ok |= (uint8_t)(1u << i);
         // A stage keyed later (its code area is in no memory pool yet) is keyed from the host's copy of its control section's key bytes, as NVN lets the game free its own
@@ -805,7 +810,17 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
         // and its copies point at it, so it stays as long as the process, as the record does. nvn_ctl_lens reads it again: NVN's key bytes hold +0x20 and +0x704, NVN2's +0x44
         if (sd[i].control && (dump || !(k->ok >> i & 1))) {
             uint32_t nctl, ncode; nvn_ctl_lens(sd[i].control, &nctl, &ncode);
-            void *c = malloc(nctl); memcpy(c, sd[i].control, nctl); o->sd[i].control = c;
+            if (nctl > 0 && nctl <= (1u << 20)) {
+                void *c = malloc(nctl);
+                if (c) {
+                    memcpy(c, sd[i].control, nctl);
+                    o->sd[i].control = c;
+                } else {
+                    o->sd[i].control = NULL;
+                }
+            } else {
+                o->sd[i].control = NULL;
+            }
         }
         // Diagnostic: trace the loader of selected shader keys (comma-separated hex).
         if (trace && (k->ok & (1u << i))) {

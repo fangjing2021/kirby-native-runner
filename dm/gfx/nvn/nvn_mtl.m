@@ -345,7 +345,11 @@ static char g_image_heap_owner_key;
 // nothing it reads depends on the reuse; the memory was the old texture's only up to that texture's last use, which completed, as with memory Metal frees and hands out again, so no
 // alias flush is added (resource_vis). Heaps idle for RH_IDLE_NS, and the oldest past RH_CAP bytes waiting, leave the residency set when a submission begins (rh_trim).
 // DM_NVN_RT_RECYCLE=0 makes each target its own allocation as before; ab alternates it with the DM_AB phases
+#if TARGET_OS_IPHONE
+enum { RH_CAP = 64u << 20 }; static const uint64_t RH_IDLE_NS = 1000000000ull;
+#else
 enum { RH_CAP = 256u << 20 }; static const uint64_t RH_IDLE_NS = 3000000000ull;
+#endif
 typedef struct { void *heap; uint64_t size, t; } rh_ent;   // heap: retained (CFBridgingRetain); t: when it began to wait
 static os_unfair_lock g_rh_lk = OS_UNFAIR_LOCK_INIT; static rh_ent *g_rh; static unsigned g_rh_n, g_rh_cap; static uint64_t g_rh_bytes;
 static _Atomic uint64_t g_rh_made, g_rh_reused, g_rh_trimmed;   // for the memory readout
@@ -370,9 +374,10 @@ static id<MTLHeap> rh_take(MTLTextureDescriptor *d, int *reused) {
     void *got = NULL;
     os_unfair_lock_lock(&g_rh_lk);
     unsigned best = g_rh_n;
+    uint64_t max_fit = need.size < (4u << 20) ? (need.size + need.size / 2) : (need.size + need.size / 4);
     for (unsigned i = 0; i < g_rh_n; i++) {
         id<MTLHeap> h = (__bridge id<MTLHeap>)g_rh[i].heap;
-        if (g_rh[i].size < need.size || g_rh[i].size > need.size + need.size / 8 || (best < g_rh_n && g_rh[i].size >= g_rh[best].size)) continue;
+        if (g_rh[i].size < need.size || g_rh[i].size > max_fit || (best < g_rh_n && g_rh[i].size >= g_rh[best].size)) continue;
         if (h.storageMode != d.storageMode || h.cpuCacheMode != d.cpuCacheMode) continue;   // (a placed texture takes its heap's hazard tracking: a placement heap reports untracked, a descriptor default)
         best = i;
     }
@@ -403,15 +408,26 @@ static id<MTLTexture> rh_texture(const tex_t *t, MTLTextureDescriptor *d) {
 static void rh_trim(void) {
     if (!g_rh_n) return;
     uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC); void *drop[64]; unsigned nd = 0;
+    uint64_t eff_cap = RH_CAP;
+    uint64_t eff_idle = RH_IDLE_NS;
+#if TARGET_OS_IPHONE
+    if (os_proc_available_memory() < (1024ull << 20)) {
+        eff_cap = 0;
+        eff_idle = 0;
+    }
+#endif
     os_unfair_lock_lock(&g_rh_lk);
     while (g_rh_n && nd < 64) {
         unsigned old = 0; for (unsigned i = 1; i < g_rh_n; i++) if (g_rh[i].t < g_rh[old].t) old = i;
-        if (now - g_rh[old].t < RH_IDLE_NS && g_rh_bytes <= RH_CAP) break;
+        if (now - g_rh[old].t < eff_idle && g_rh_bytes <= eff_cap) break;
         drop[nd++] = g_rh[old].heap; g_rh_bytes -= g_rh[old].size; g_rh[old] = g_rh[--g_rh_n];
     }
     os_unfair_lock_unlock(&g_rh_lk);
     for (unsigned i = 0; i < nd; i++) { id<MTLHeap> h = CFBridgingRelease(drop[i]); res_remove(h); }
-    if (nd) atomic_fetch_add(&g_rh_trimmed, nd);
+    if (nd) {
+        atomic_fetch_add(&g_rh_trimmed, nd);
+        res_commit();
+    }
 }
 // The R32 storage under a 32-bit colour texture that takes image atomics (tex_upgrade): resident as long as the colour view over it lives, which is what the game's names hold
 @interface NvAtomicRaw : NSObject { @public id<MTLTexture> raw; } @end
@@ -1627,7 +1643,11 @@ static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { if (!n.width || 
 static inline void enc_c_dispatch_indirect(id e, uint64_t ind, MTLSize t) { if (!ind || !t.width || !t.height || !t.depth) return; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:ind threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) {
     if (cb == g_cb) { g_cm_enc++; cm_enc_mark(3); }
+#if TARGET_OS_IPHONE
+    id e = [[DmCompatComputeBlitEncoder alloc] initWithCommandBuffer:cb];
+#else
     id e = [cb respondsToSelector:@selector(blitCommandEncoder)] ? [cb blitCommandEncoder] : [cb computeCommandEncoder];
+#endif
     if (cb == g_cb) cm_enc_mark(1);
     return e; }
 static inline void enc_b_end(id e) { m4_end(e); }
@@ -5722,8 +5742,10 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
         int open_errno = errno; romfs_img *img; const img_ent *x = msl_image_file(path, &img); msl_map f;
         if (x && msl_image_map(img, x, &f)) {
             t_lib_layer = memmem(f.data, f.size, "render_target_array_index", 25) != NULL;
-            void *base = f.base; size_t base_len = f.base_len;
-            dispatch_data_t d = dispatch_data_create(f.data, f.size, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ munmap(base, base_len); });
+            dispatch_data_t d = dispatch_data_create(f.data, f.size, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                if (base_len) munmap(base, base_len);
+                else free(base);
+            });
             return [g_dev newLibraryWithData:d error:err];
         }
         if (!x) errno = open_errno;
