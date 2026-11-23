@@ -141,35 +141,45 @@ void mtl_register_texture(id<MTLTexture> tex) {
     if (!tex) return;
     uint64_t rid = tex.gpuResourceID._impl;
     if (!rid) return;
-    os_unfair_lock_lock(&s_tex_lock);
-    if (!s_rid_textures) s_rid_textures = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
-    [s_rid_textures setObject:tex forKey:(__bridge id)(void *)(uintptr_t)rid];
-    os_unfair_lock_unlock(&s_tex_lock);
+    @autoreleasepool {
+        os_unfair_lock_lock(&s_tex_lock);
+        if (!s_rid_textures) s_rid_textures = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
+        [s_rid_textures setObject:tex forKey:(__bridge id)(void *)(uintptr_t)rid];
+        os_unfair_lock_unlock(&s_tex_lock);
+    }
 }
 
 void mtl_register_sampler(id<MTLSamplerState> samp) {
     if (!samp) return;
     uint64_t rid = samp.gpuResourceID._impl;
     if (!rid) return;
-    os_unfair_lock_lock(&s_samp_lock);
-    if (!s_rid_samplers) s_rid_samplers = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
-    [s_rid_samplers setObject:samp forKey:(__bridge id)(void *)(uintptr_t)rid];
-    os_unfair_lock_unlock(&s_samp_lock);
+    @autoreleasepool {
+        os_unfair_lock_lock(&s_samp_lock);
+        if (!s_rid_samplers) s_rid_samplers = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsIntegerPersonality valueOptions:NSPointerFunctionsWeakMemory];
+        [s_rid_samplers setObject:samp forKey:(__bridge id)(void *)(uintptr_t)rid];
+        os_unfair_lock_unlock(&s_samp_lock);
+    }
 }
 
 id<MTLTexture> mtl_lookup_texture(uint64_t rid) {
     if (!rid) return nil;
-    os_unfair_lock_lock(&s_tex_lock);
-    id<MTLTexture> tex = s_rid_textures ? [s_rid_textures objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
-    os_unfair_lock_unlock(&s_tex_lock);
+    id<MTLTexture> tex = nil;
+    @autoreleasepool {
+        os_unfair_lock_lock(&s_tex_lock);
+        tex = s_rid_textures ? [s_rid_textures objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
+        os_unfair_lock_unlock(&s_tex_lock);
+    }
     return tex;
 }
 
 id<MTLSamplerState> mtl_lookup_sampler(uint64_t rid) {
     if (!rid) return nil;
-    os_unfair_lock_lock(&s_samp_lock);
-    id<MTLSamplerState> samp = s_rid_samplers ? [s_rid_samplers objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
-    os_unfair_lock_unlock(&s_samp_lock);
+    id<MTLSamplerState> samp = nil;
+    @autoreleasepool {
+        os_unfair_lock_lock(&s_samp_lock);
+        samp = s_rid_samplers ? [s_rid_samplers objectForKey:(__bridge id)(void *)(uintptr_t)rid] : nil;
+        os_unfair_lock_unlock(&s_samp_lock);
+    }
     return samp;
 }
 
@@ -177,9 +187,10 @@ static __unsafe_unretained DmCompatArgumentTable *s_all_tables[64];
 static int s_all_tables_count = 0;
 static os_unfair_lock s_tables_lock = OS_UNFAIR_LOCK_INIT;
 
-static __unsafe_unretained DmCompatArgumentTable *s_active_vt = nil;
-static __unsafe_unretained DmCompatArgumentTable *s_active_ft = nil;
-static __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
+// Thread-local active tables: prevents nvn-present / DisplayLink from stomping dm-encode / replay tables
+static __thread __unsafe_unretained DmCompatArgumentTable *s_active_vt = nil;
+static __thread __unsafe_unretained DmCompatArgumentTable *s_active_ft = nil;
+static __thread __unsafe_unretained DmCompatArgumentTable *s_active_ct = nil;
 
 @implementation DmCompatArgumentTable {
     uint64_t _addresses[32];
@@ -323,7 +334,7 @@ static char kCompatCtKey;
     id<MTLTexture> tex = _textures[index] ? _textures[index] : mtl_dummy_tex(0, 0);
     if (!tex) return;
     if (_is_compute) {
-        if ([enc respondsToSelector:@selector(setTexture:atIndex:)]) {
+        if ([enc conformsToProtocol:@protocol(MTLComputeCommandEncoder)]) {
             [(id<MTLComputeCommandEncoder>)enc setTexture:tex atIndex:index];
         }
     } else {
@@ -392,7 +403,7 @@ static char kCompatCtKey;
             id<MTLTexture> tex = _textures[i] ? _textures[i] : mtl_dummy_tex(0, 0);
             if (tex) {
                 if (_is_compute) {
-                    if ([encoder respondsToSelector:@selector(setTexture:atIndex:)]) {
+                    if ([encoder conformsToProtocol:@protocol(MTLComputeCommandEncoder)]) {
                         [(id<MTLComputeCommandEncoder>)encoder setTexture:tex atIndex:i];
                     }
                 } else {
@@ -470,7 +481,7 @@ static char kCompatCtKey;
                     id<MTLTexture> tex = _textures[i] ? _textures[i] : mtl_dummy_tex(0, 0);
                     if (tex) {
                         if (_is_compute) {
-                            if ([encoder respondsToSelector:@selector(setTexture:atIndex:)]) {
+                            if ([encoder conformsToProtocol:@protocol(MTLComputeCommandEncoder)]) {
                                 [(id<MTLComputeCommandEncoder>)encoder setTexture:tex atIndex:i];
                             }
                         } else {
@@ -796,15 +807,17 @@ static char kFenceKey;
     BOOL dispatched = NO;
     for (NSUInteger i = 0; i < count; i++) {
         id b = buffers[i];
-        if (handlers.count > 0 && [b respondsToSelector:@selector(addCompletedHandler:)]) {
+        if (i + 1 == count && handlers.count > 0 && [b respondsToSelector:@selector(addCompletedHandler:)]) {
             dispatched = YES;
             [b addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-                MTL4CommitFeedbackImpl *f = [MTL4CommitFeedbackImpl new];
-                f.error = cb.error;
-                f.GPUStartTime = cb.GPUStartTime;
-                f.GPUEndTime = cb.GPUEndTime;
-                for (void (^h)(id<MTL4CommitFeedback>) in handlers) {
-                    h(f);
+                @autoreleasepool {
+                    MTL4CommitFeedbackImpl *f = [MTL4CommitFeedbackImpl new];
+                    f.error = cb.error;
+                    f.GPUStartTime = cb.GPUStartTime;
+                    f.GPUEndTime = cb.GPUEndTime;
+                    for (void (^h)(id<MTL4CommitFeedback>) in handlers) {
+                        h(f);
+                    }
                 }
             }];
         }
@@ -833,11 +846,31 @@ static char kFenceKey;
 - (void)signalDrawable:(id)dr { (void)dr; }
 
 - (void)signalEvent:(id)event value:(uint64_t)value {
+    if (!event) return;
+    if ([self respondsToSelector:@selector(commandBuffer)]) {
+        @autoreleasepool {
+            id<MTLCommandBuffer> cb = [(id<MTLCommandQueue>)self commandBuffer];
+            if (cb) {
+                [cb encodeSignalEvent:(id<MTLEvent>)event value:value];
+                [cb commit];
+                return;
+            }
+        }
+    }
     if ([event respondsToSelector:@selector(setSignaledValue:)]) {
         ((id<MTLSharedEvent>)event).signaledValue = value;
     }
 }
-- (void)waitForEvent:(id)event value:(uint64_t)value { (void)event; (void)value; }
+- (void)waitForEvent:(id)event value:(uint64_t)value {
+    if (!event || ![self respondsToSelector:@selector(commandBuffer)]) return;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = [(id<MTLCommandQueue>)self commandBuffer];
+        if (cb) {
+            [cb encodeWaitForEvent:(id<MTLEvent>)event value:value];
+            [cb commit];
+        }
+    }
+}
 - (void)updateTextureMappings:(id)texture heap:(id)heap operations:(const void *)operations count:(NSUInteger)count {
     (void)texture; (void)heap; (void)operations; (void)count;
 }

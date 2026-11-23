@@ -4949,16 +4949,45 @@ void mtl_window_tex_clear(const void *tex) {
     const tex_t *t = (const tex_t *)tex;
     if (!t || !t->serial) return;
     id<MTLTexture> mt = tex_mtl(t);
-    if (!mt || !(mt.usage & MTLTextureUsageRenderTarget)) return;
+    if (!mt) return;
+    // Ensure the swapchain texture is resident and serialize against any in-flight g_q4 / upload work before touching g_q.
+    res_add(mt);
+    res_commit();
+    if (on_sub_thread()) {
+        up_flush();
+        rec_drain();
+        up_wait_zero(&g_up_pending, WS_OLDQ);
+    } else {
+        uint64_t inflight = atomic_load(&g_fence);
+        if (inflight > atomic_load(&g_done)) mtl_wait(inflight, UINT64_MAX);
+    }
     @autoreleasepool {
-        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor new];
-        rp.colorAttachments[0].texture = mt;
-        rp.colorAttachments[0].loadAction = MTLLoadActionClear;
-        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
         id<MTLCommandBuffer> cb = [g_q commandBuffer];
-        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
-        [enc endEncoding];
+        if (g_res && [cb respondsToSelector:@selector(useResidencySet:)]) {
+            [cb useResidencySet:g_res];
+        }
+        if (mt.usage & MTLTextureUsageRenderTarget) {
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor new];
+            rp.colorAttachments[0].texture = mt;
+            rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+            [enc endEncoding];
+        } else {
+            NSUInteger bpr = mt.width * 4;
+            NSUInteger sz = bpr * mt.height;
+            id<MTLBuffer> zeroBuf = sz ? [g_dev newBufferWithLength:sz options:MTLResourceStorageModeShared] : nil;
+            if (zeroBuf) {
+                memset(zeroBuf.contents, 0, sz);
+                id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+                [blit copyFromBuffer:zeroBuf sourceOffset:0 sourceBytesPerRow:bpr
+                   sourceBytesPerImage:sz sourceSize:MTLSizeMake(mt.width, mt.height, 1)
+                             toTexture:mt destinationSlice:0 destinationLevel:0
+                     destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [blit endEncoding];
+            }
+        }
         [cb commit];
         [cb waitUntilCompleted];
     }
@@ -6553,19 +6582,19 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
         }
         static int noted; if (!noted++) MLOG("2D binding fallback: texture ID %d is 3D %lux%lux%lu (Metal format %lu); zero 2D texture bound", tid,
                                              (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth, (unsigned long)t.pixelFormat);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); if (z) mtl_register_texture(z); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
     if (!ns && (want == MTLTextureTypeCube || want == MTLTextureTypeCubeArray) && have == MTLTextureType3D) {
         static int noted; if (!noted++) MLOG("cube binding fallback: texture ID %d is 3D; zero cube bound", tid);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); if (z) mtl_register_texture(z); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
     if (!ns && want == MTLTextureType3D && (have == MTLTextureTypeCube || have == MTLTextureTypeCubeArray)) {
         static int noted; if (!noted++) MLOG("3D binding fallback: texture ID %d is cube; zero 3D bound", tid);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); if (z) mtl_register_texture(z); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z; }
 #if TARGET_OS_IPHONE
     // On iOS Apple Silicon AGX GPUs, any unbridgeable texture type mismatch causes a fatal GPU page fault.
     // Fall back to a zero dummy texture of the expected type to guarantee shader validation and GPU safety.
     if (!ns) {
         static int noted; if (!noted++) MLOG("iOS texture binding fallback: texture ID %d type %lu -> %lu; zero texture bound", tid, (unsigned long)have, (unsigned long)want);
-        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z;
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); if (z) mtl_register_texture(z); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z;
     }
 #endif
     if (!ns || tid <= 0 || tid >= g_ntreg) return nil;   // no view bridges it: caller falls back to dummy matching expected type and pixel format
@@ -6578,7 +6607,13 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
     id<MTLTexture> base = t; NSUInteger l0 = 0, s0 = 0;
     while (base.parentTexture) { l0 += base.parentRelativeLevel; s0 += base.parentRelativeSlice; base = base.parentTexture; }
     id<MTLTexture> v = [base newTextureViewWithPixelFormat:t.pixelFormat textureType:want levels:NSMakeRange(l0, t.mipmapLevelCount) slices:NSMakeRange(s0, ns) swizzle:t.swizzle];
-    if (!v) { RED_ONCE(77, "cannot create a type-compatible texture view: %lu → %lu (texture ID %d)", (unsigned long)have, (unsigned long)want, tid); return nil; }
+    if (!v) {
+        RED_ONCE(77, "cannot create a type-compatible texture view: %lu → %lu (texture ID %d)", (unsigned long)have, (unsigned long)want, tid);
+#if TARGET_OS_IPHONE
+        id<MTLTexture> z = dummy_tex((int)want, NVN_DPF_FLOAT); if (z) mtl_register_texture(z); *rid = z ? z.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT); return z;
+#endif
+        return nil;
+    }
     res_add(v); res_commit();
     r->alt = (void *)CFBridgingRetain(v); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)want; r->alt_rid = v.gpuResourceID._impl;
     *rid = r->alt_rid ? r->alt_rid : (v ? v.gpuResourceID._impl : dummy_tex_rid((int)want, NVN_DPF_FLOAT)); return v;
@@ -15785,7 +15820,10 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         present_gpu_note(f.GPUEndTime - f.GPUStartTime, fx_kind); pthread_mutex_unlock(&g_pq_mu);
     }];
     id<MTL4CommandBuffer> buffers[] = {cb};
-    pthread_mutex_lock(&g_pq_mu); g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
+    pthread_mutex_lock(&g_pq_mu);
+    g_present_alloc_fence[alloc_i] = ticket;
+    g_pq_inflight++;
+    pthread_mutex_unlock(&g_pq_mu);
     [g_q4 commit:buffers count:1 options:o];
     if (target_ts > 0) {
         static double leads[300], e2e[300];   // e2e: game enqueue -> system-scheduled present (including the time waiting in the queue for the display-link callback), the full span of input latency that our side can read
@@ -15803,7 +15841,6 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         }
     }
     [g_q4 signalDrawable:dr];
-    g_present_alloc_fence[alloc_i] = ticket;
 #if TARGET_OS_SIMULATOR   // The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)
     (void)period; [dr present];
 #elif !TARGET_OS_IPHONE
