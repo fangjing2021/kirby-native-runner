@@ -571,6 +571,7 @@ static void defer_drain(void) { @autoreleasepool {
         }
         d->object = nil;
     }
+    res_commit();
 } }
 
 // A profile list of shader keys the host asks the next shader build for (bf_want.tsv, dual_want.tsv): each key appended once to the file the environment names. A shader's key is
@@ -1411,11 +1412,24 @@ void mtl_prepare(void) {
 }
 static void sub_cut_begin(void); static void ts_sub_begin(void), ts_boundary(void); static int ts_on(void);
 static void gmem_commit_patch(void);   // the raw pool table words of the arguments encoded so far follow the pools (gmem_slot_note)
+static void alias_trim_unreferenced(int force);
 void mtl_sub_begin(void) {
     mtl_init(); g_sub_serial++; g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL;
     sub_cut_begin();
     defer_drain();
     rh_trim();
+#if TARGET_OS_IPHONE
+    int low_mem = os_proc_available_memory() < (1024ull << 20);
+    if (low_mem || (g_sub_serial % 16 == 0)) {
+        alias_trim_unreferenced(low_mem);
+        if (low_mem) {
+            defer_drain();
+            res_commit();
+        }
+    }
+#else
+    if (g_sub_serial % 32 == 0) alias_trim_unreferenced(0);
+#endif
     defer_reset();
     mtl_prepare();   // done by then in the submit entry; the replay tool (nvn_replay) reaches it here
     warm_claim();
@@ -2639,6 +2653,40 @@ static void alias_take_over(const alias_key *nk) {
         defer_obj_release(o);
     }
     if (n) { ser_note(0); g_alias_taken += n; }
+}
+static void alias_trim_unreferenced(int force) {
+    if (!g_alias.cap) return;
+    uint32_t n = 0;
+    alias_key ks[64];
+    uint64_t cur_fence = g_fence + 1;
+    uint64_t idle_thresh = force ? 1 : 60;
+
+    pthread_mutex_lock(&g_smu);
+    for (uint32_t i = 0; i < g_alias.cap && n < 64; i++) {
+        if (!g_alias.vals[i]) continue;
+        void *val = g_alias.vals[i];
+        if (entry_holds(val)) continue;
+
+        alias_key k;
+        memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+        uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
+        if (!force && seen && (cur_fence - seen < idle_thresh)) continue;
+
+        ks[n++] = k;
+    }
+    for (uint32_t j = 0; j < n; j++) {
+        void *old = nvn_hm_del(&g_alias, &ks[j]);
+        if (!old) continue;
+        nvn_hm_del(&g_alias_seen, &ks[j]);
+        id o = CFBridgingRelease(old);
+        if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
+        defer_obj_release(o);
+    }
+    if (n) {
+        ser_note(0);
+        g_alias_evicted += n;
+    }
+    pthread_mutex_unlock(&g_smu);
 }
 static __unsafe_unretained id serial_get(uint64_t k) { pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); pthread_mutex_unlock(&g_smu); return o; }
 static void serial_put(uint64_t k, id o) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { held_add((__bridge void *)old, -1); if (alias_has(old)) defer_obj_unref(old); else defer_obj_release(old); } hm_put_id(&g_by_serial, &k, o); held_add((__bridge void *)o, 1); ser_note(k); pthread_mutex_unlock(&g_smu); }
