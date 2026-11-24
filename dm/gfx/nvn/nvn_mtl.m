@@ -571,7 +571,6 @@ static void defer_drain(void) { @autoreleasepool {
         }
         d->object = nil;
     }
-    res_commit();
 } }
 
 // A profile list of shader keys the host asks the next shader build for (bf_want.tsv, dual_want.tsv): each key appended once to the file the environment names. A shader's key is
@@ -1419,16 +1418,12 @@ void mtl_sub_begin(void) {
     defer_drain();
     rh_trim();
 #if TARGET_OS_IPHONE
-    int low_mem = os_proc_available_memory() < (1024ull << 20);
-    if (low_mem || (g_sub_serial % 16 == 0)) {
-        alias_trim_unreferenced(low_mem);
-        if (low_mem) {
-            defer_drain();
-            res_commit();
-        }
+    // 仅在真正触发低内存压力 (< 1 GB) 时才驱逐未引用别名纹理，避免正常渲染期破坏池别名 RenderTarget 复用
+    if (os_proc_available_memory() < (1024ull << 20)) {
+        alias_trim_unreferenced(1);
+        defer_drain();
+        res_commit();
     }
-#else
-    if (g_sub_serial % 32 == 0) alias_trim_unreferenced(0);
 #endif
     defer_reset();
     mtl_prepare();   // done by then in the submit entry; the replay tool (nvn_replay) reaches it here
@@ -1659,11 +1654,7 @@ static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { if (!n.width || 
 static inline void enc_c_dispatch_indirect(id e, uint64_t ind, MTLSize t) { if (!ind || !t.width || !t.height || !t.depth) return; [DmCompatArgumentTable ensureArgsForEncoder:e]; [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:ind threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) {
     if (cb == g_cb) { g_cm_enc++; cm_enc_mark(3); }
-#if TARGET_OS_IPHONE
-    id e = [[DmCompatComputeBlitEncoder alloc] initWithCommandBuffer:cb];
-#else
     id e = [cb respondsToSelector:@selector(blitCommandEncoder)] ? [cb blitCommandEncoder] : [cb computeCommandEncoder];
-#endif
     if (cb == g_cb) cm_enc_mark(1);
     return e; }
 static inline void enc_b_copy_buffer(id e, id<MTLBuffer> s, NSUInteger so, id<MTLBuffer> d, NSUInteger doff, NSUInteger n) { [e copyFromBuffer:s sourceOffset:so toBuffer:d destinationOffset:doff size:n]; }
@@ -2670,7 +2661,7 @@ static void alias_trim_unreferenced(int force) {
         alias_key k;
         memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
         uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
-        if (!force && seen && (cur_fence - seen < idle_thresh)) continue;
+        if (!force && (!seen || (cur_fence - seen < idle_thresh))) continue;
 
         ks[n++] = k;
     }
@@ -16258,13 +16249,16 @@ static uint64_t snap_take(const tex_t *t) {
     }
     [g_snap_alloc[k] reset];
     id<MTL4CommandBuffer> cb = [g_dev newCommandBuffer];
+    if (g_res && [cb respondsToSelector:@selector(useResidencySet:)]) {
+        [(id<MTLCommandBuffer>)cb useResidencySet:g_res];
+    }
     g_snap_cb[k] = cb;
     [cb beginCommandBufferWithAllocator:g_snap_alloc[k]];
-    id ce = enc_b_begin(cb);
-    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];   // after the frame's work and the slot's last blit to the screen
+    id ce = [cb respondsToSelector:@selector(blitCommandEncoder)] ? [cb blitCommandEncoder] : [cb computeCommandEncoder];
+    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()];   // after the frame's work and the slot's last blit to the screen
     [ce copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(src.width, src.height, 1) toTexture:dst destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // the game's next writes to its texture come after the copy
-    enc_b_end(ce); [cb endCommandBuffer];
+    [ce endEncoding]; [cb endCommandBuffer];
     uint64_t v = ++g_snap_v;
     if (rec_on() && g_rb_started) {   // a block of the encode thread's queue, behind the frame's work (see above)
         if (on_sub_thread()) rec_publish();   // what the submitting thread recorded outside a submission goes first
