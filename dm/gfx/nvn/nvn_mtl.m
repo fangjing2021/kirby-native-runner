@@ -1598,7 +1598,7 @@ static void gp_report(int n, gp_lab *lab, uint64_t frame) {   // the frame's las
     MLOG("[gpuprof] frame %llu: render %.2f ms, compute / copy %.2f ms over %d encoders (%d render passes, attachments load %.1f MB store %.1f MB), first start to last end %.2f ms", (unsigned long long)frame, tot[0] / 1e3, tot[1] / 1e3, n, np, ld / 1024.0, st / 1024.0, span / 1e3);
     free(lab); atomic_store(&g_gp_busy, 0);
 }
-static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescriptor *d) { g_cm_enc++; cm_enc_mark(2);   // the draw passes (rp_begin_ex); see barrier_game
+static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescriptor *d) { if (g_blit) { enc_b_end(g_blit); g_blit = nil; } g_cm_enc++; cm_enc_mark(2);   // the draw passes (rp_begin_ex); see barrier_game
     id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; cm_enc_mark(0);
     if (g_last_end_relaxed && !g_game_barrier && barrier_game() && !g_image_heap_n) g_bar_skip++;
     else { [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; g_bar_full++; }
@@ -1611,7 +1611,7 @@ static inline void enc_r_end_pass(id e) {
     [DmCompatArgumentTable notifyEncoderEnded:e];
     [e endEncoding]; g_last_end_relaxed = 1;
 }
-static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { g_cm_enc++; cm_enc_mark(2); id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; cm_enc_mark(0); [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e; }
+static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { if (g_blit) { enc_b_end(g_blit); g_blit = nil; } g_cm_enc++; cm_enc_mark(2); id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; cm_enc_mark(0); [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e; }
 static inline void enc_r_end(id e) { m4_end(e); }
 static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { [e setRenderPipelineState:p]; }
 static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilState> s) { [e setDepthStencilState:s]; }
@@ -12695,6 +12695,7 @@ static void fb_prepare(NvProg *pr) {
             if (fresh) {
                 if (g_enc) rp_end();
                 id<MTL4ComputeCommandEncoder> be = blit(); enc_b_copy_texture(be, base, (NSUInteger)sl, (NSUInteger)lv, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), snap, 0, 0, MTLOriginMake(0, 0, 0));
+                if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
             } else if (g_enc && (g_fb_rmask >> k & 1)) rp_end();   // an earlier draw of this pass read the attachment directly: it must not see this pass's writes
             if (!g_enc) fb_pass_sync();
             MTLTextureSwizzleChannels sw = t.swizzle;
