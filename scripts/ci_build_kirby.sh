@@ -14,8 +14,16 @@ fi
 xcodebuild -version
 xcrun -sdk iphoneos metal --version
 xcodebuild -runFirstLaunch || true
-xcrun simctl list > /dev/null 2>&1 || true
-xcodebuild -downloadPlatform iOS || true
+for attempt in 1 2 3 4 5; do
+  echo "Downloading iOS platform (attempt $attempt)..."
+  if sudo xcodebuild -downloadPlatform iOS; then
+    echo "iOS platform download succeeded."
+    break
+  else
+    echo "Attempt $attempt failed. Waiting 5s before retry..."
+    sleep 5
+  fi
+done
 
 echo "=== 2. Install .NET 10 Runtime ==="
 curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 || true
