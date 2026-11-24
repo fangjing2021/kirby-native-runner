@@ -106,27 +106,53 @@ static void rec_note_wait(_Atomic uint64_t *p, uint64_t v) {
 
 // ---------- The encode thread ----------
 static id g_rx_cb, g_rx_enc;   // the encode thread's real command buffer and open encoder
-static inline id rec_ensure_compute(id cb, id cur_enc) {
-    if (cur_enc && ![cur_enc respondsToSelector:@selector(setComputePipelineState:)]) {
-        [DmCompatArgumentTable notifyEncoderEnded:cur_enc];
-        [(id<MTL4CommandEncoder>)cur_enc endEncoding];
-        return [(id<MTL4CommandBuffer>)cb computeCommandEncoder];
-    }
-    if (!cur_enc) {
-        return [(id<MTL4CommandBuffer>)cb computeCommandEncoder];
-    }
-    return cur_enc;
+static inline void rec_end_with_fence(id enc) {
+    if (!enc) return;
+    [(id<MTL4CommandEncoder>)enc barrierAfterStages:MTLStageAll
+                                  beforeQueueStages:MTLStageAll
+                                  visibilityOptions:MTL4VisibilityOptionDevice];
+    [DmCompatArgumentTable notifyEncoderEnded:enc];
+    [(id<MTL4CommandEncoder>)enc endEncoding];
 }
+
+static inline id rec_open_blit(id cb, int wait_fence) {
+    id ne = [(id<MTLCommandBuffer>)cb respondsToSelector:@selector(blitCommandEncoder)]
+            ? [(id<MTLCommandBuffer>)cb blitCommandEncoder]
+            : [(id<MTLCommandBuffer>)cb computeCommandEncoder];
+    mtl_compat_tag_encoder(ne, cb);
+    if (wait_fence) {
+        [(id<MTL4CommandEncoder>)ne barrierAfterQueueStages:MTLStageAll
+                                               beforeStages:MTLStageAll
+                                          visibilityOptions:MTL4VisibilityOptionDevice];
+    }
+    return ne;
+}
+
+static inline id rec_open_compute(id cb, int wait_fence) {
+    id ne = [(id<MTLCommandBuffer>)cb computeCommandEncoder];
+    mtl_compat_tag_encoder(ne, cb);
+    if (wait_fence) {
+        [(id<MTL4CommandEncoder>)ne barrierAfterQueueStages:MTLStageAll
+                                               beforeStages:MTLStageAll
+                                          visibilityOptions:MTL4VisibilityOptionDevice];
+    }
+    return ne;
+}
+
+static inline id rec_ensure_compute(id cb, id cur_enc) {
+    if (cur_enc && ![cur_enc conformsToProtocol:@protocol(MTLComputeCommandEncoder)]) {
+        rec_end_with_fence(cur_enc);
+        return rec_open_compute(cb, 1);
+    }
+    return cur_enc ? cur_enc : rec_open_compute(cb, 1);
+}
+
 static inline id rec_ensure_blit(id cb, id cur_enc) {
-    if (cur_enc && ![cur_enc respondsToSelector:@selector(copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:)]) {
-        [DmCompatArgumentTable notifyEncoderEnded:cur_enc];
-        [(id<MTL4CommandEncoder>)cur_enc endEncoding];
-        return [(id<MTLCommandBuffer>)cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)cb blitCommandEncoder] : [(id<MTLCommandBuffer>)cb computeCommandEncoder];
+    if (cur_enc && ![cur_enc conformsToProtocol:@protocol(MTLBlitCommandEncoder)]) {
+        rec_end_with_fence(cur_enc);
+        return rec_open_blit(cb, 1);
     }
-    if (!cur_enc) {
-        return [(id<MTLCommandBuffer>)cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)cb blitCommandEncoder] : [(id<MTLCommandBuffer>)cb computeCommandEncoder];
-    }
-    return cur_enc;
+    return cur_enc ? cur_enc : rec_open_blit(cb, 1);
 }
 static void rec_exec(const rec_t *r) {
     const uint64_t *a = r->a; id e = g_rx_enc;
@@ -157,9 +183,19 @@ static void rec_exec(const rec_t *r) {
         break; }
     case RO_SIGNAL: [g_q4 signalEvent:rec_id(a[0]) value:a[1]]; break;
     case RO_Q_BLOCK: ((void (^)(void))rec_id(a[0]))(); break;
-    case RO_RE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb renderCommandEncoderWithDescriptor:rec_id(a[0])]; break;
-    case RO_CE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb computeCommandEncoder]; break;
-    case RO_BE_BEGIN: g_rx_enc = [(id<MTLCommandBuffer>)g_rx_cb respondsToSelector:@selector(blitCommandEncoder)] ? [(id<MTLCommandBuffer>)g_rx_cb blitCommandEncoder] : [(id<MTLCommandBuffer>)g_rx_cb computeCommandEncoder]; break;
+    case RO_RE_BEGIN:
+        if (e) rec_end_with_fence(e);
+        g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb renderCommandEncoderWithDescriptor:rec_id(a[0])];
+        mtl_compat_tag_encoder(g_rx_enc, g_rx_cb);
+        break;
+    case RO_CE_BEGIN:
+        if (e) rec_end_with_fence(e);
+        g_rx_enc = rec_open_compute(g_rx_cb, 0);
+        break;
+    case RO_BE_BEGIN:
+        if (e) rec_end_with_fence(e);
+        g_rx_enc = rec_open_blit(g_rx_cb, 0);
+        break;
     case RO_END: [DmCompatArgumentTable notifyEncoderEnded:e]; [(id<MTL4CommandEncoder>)e endEncoding]; g_rx_enc = nil; break;
     case RO_BAR_QUEUE: [(id<MTL4CommandEncoder>)e barrierAfterQueueStages:a[0] beforeStages:a[1] visibilityOptions:a[2]]; break;
     case RO_BAR_AFTER_STAGES: [(id<MTL4CommandEncoder>)e barrierAfterStages:a[0] beforeQueueStages:a[1] visibilityOptions:a[2]]; break;

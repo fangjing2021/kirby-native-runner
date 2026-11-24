@@ -42,6 +42,7 @@ id<MTLTexture> mtl_lookup_texture_by_tid(uint32_t tid);
 id<MTLSamplerState> mtl_lookup_sampler(uint64_t rid);
 id<MTLSamplerState> mtl_lookup_sampler_by_sid(uint32_t sid);
 int mtl_gpu_to_buf(uint64_t gpu_addr, uint64_t len, void **buf, uint64_t *off);
+void mtl_compat_tag_encoder(id enc, id cb);
 
 @protocol MTL4ArgumentTable <NSObject>
 - (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index;

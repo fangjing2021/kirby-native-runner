@@ -385,7 +385,12 @@ static id<MTLHeap> rh_take(MTLTextureDescriptor *d, int *reused) {
     os_unfair_lock_unlock(&g_rh_lk);
     if (got) { *reused = 1; return CFBridgingRelease(got); }
     MTLHeapDescriptor *hd = [MTLHeapDescriptor new]; hd.type = MTLHeapTypePlacement; hd.size = need.size;
-    hd.storageMode = d.storageMode; hd.cpuCacheMode = d.cpuCacheMode; hd.hazardTrackingMode = d.hazardTrackingMode;
+    hd.storageMode = d.storageMode; hd.cpuCacheMode = d.cpuCacheMode;
+#if TARGET_OS_IPHONE
+    hd.hazardTrackingMode = MTLHazardTrackingModeTracked;
+#else
+    hd.hazardTrackingMode = d.hazardTrackingMode;
+#endif
     *reused = 0; return [g_dev newHeapWithDescriptor:hd];
 }
 // A shared render target in a GPU-only pool (tex_mtl_), in recycled memory: written by the GPU alone, so its bytes never come from the CPU's view of the pool
@@ -4317,7 +4322,12 @@ static id<MTLTexture> image_texture(const tex_t *t, MTLTextureDescriptor *d) {
     if (fresh) {
         if (!family) return nil;
         MTLHeapDescriptor *hd = [MTLHeapDescriptor new]; hd.type = MTLHeapTypePlacement; hd.size = capacity;
-        hd.storageMode = d.storageMode; hd.cpuCacheMode = d.cpuCacheMode; hd.hazardTrackingMode = d.hazardTrackingMode;
+        hd.storageMode = d.storageMode; hd.cpuCacheMode = d.cpuCacheMode;
+#if TARGET_OS_IPHONE
+        hd.hazardTrackingMode = MTLHazardTrackingModeTracked;
+#else
+        hd.hazardTrackingMode = d.hazardTrackingMode;
+#endif
         id<MTLHeap> heap = [g_dev newHeapWithDescriptor:hd]; if (!heap) return nil;
         owner = [NvImageHeap new]; owner->heap = heap; atomic_fetch_add(&g_image_heap_n, 1);
     }
@@ -15930,7 +15940,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 typedef struct { tex_t t; double period; uint64_t frame; int crop[4]; double t_in; uint64_t ev_val, snap_v; } pq_item;   // snap_v: the snapshot copy this present shows (snap_commit_wait)   // t_in: the time the game handed this frame into the present queue (CACurrentMediaTime); ev_val: see g_ext_ev
 // External producer (the Vulkan layer, dm/gfx/vk) renders on its own queue and signals this event when a frame's rendering is done: the present of that frame waits for the value on g_q4
 static id<MTLSharedEvent> g_ext_ev;
+static id<MTLSharedEvent> g_snap_ev;
 static void ext_wait(uint64_t v) { if (v && g_ext_ev) [g_q4 waitForEvent:g_ext_ev value:v]; }
+static void snap_wait(uint64_t v) { if (v && g_snap_ev) [g_q4 waitForEvent:g_snap_ev value:v]; }
 static void snap_commit_wait(uint64_t v);
 static pq_item g_pq[PQ];
 static uint64_t g_pq_in;
@@ -15999,7 +16011,9 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
-    ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
+    ext_wait(it.ev_val);
+    snap_commit_wait(it.snap_v);
+    snap_wait(it.snap_v);
     @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp); mtl_tex_unpin(it.t.serial); }
     g_link_hold_until = submitted && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
     if (!submitted) {
@@ -16178,7 +16192,7 @@ extern _Atomic uint64_t dm_present_ns;   // hle_thread.c (DM_HITCH_DUMP); the NV
 // old: the slot's texture before the presented size or format last changed, resident until the slot's next use (snap_take)
 static struct { id<MTLTexture> tex, old; uint64_t serial; _Atomic uint64_t ticket, ev; } g_snap[SNAP_MAX];
 static id<MTL4CommandAllocator> g_snap_alloc[SNAP_MAX]; static id<MTL4CommandBuffer> g_snap_cb[SNAP_MAX];
-static id<MTLResidencySet> g_snap_res; static id<MTLSharedEvent> g_snap_ev; static uint64_t g_snap_v;
+static id<MTLResidencySet> g_snap_res; static uint64_t g_snap_v;
 static _Atomic uint64_t g_snap_next, g_snap_cmt;   // g_snap_cmt: the last copy the encode thread has committed (its g_snap_v)
 static int g_snap_n = 2;
 int mtl_snap_on(void) {

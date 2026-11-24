@@ -1089,14 +1089,24 @@ static char kFenceKey;
 @end
 #pragma clang diagnostic pop
 
+static char kEncCbKey;
+void mtl_compat_tag_encoder(id enc, id cb) {
+    if (enc && cb) objc_setAssociatedObject(enc, &kEncCbKey, cb, OBJC_ASSOCIATION_ASSIGN);
+}
+
 @implementation NSObject (MTL4CompatObject)
 - (void)beginCommandBufferWithAllocator:(id)allocator { (void)allocator; }
 - (void)endCommandBuffer {}
 
 - (void)barrierAfterStages:(NSUInteger)after beforeQueueStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
-    id cb = [self respondsToSelector:@selector(commandBuffer)] ? [(id)self commandBuffer] : nil;
-    if (!cb) return;
+    id cb = objc_getAssociatedObject(self, &kEncCbKey);
+    if (!cb && [self respondsToSelector:@selector(commandBuffer)]) cb = [(id)self commandBuffer];
+    if (!cb) {
+        static int warn_fence = 0;
+        if (warn_fence++ < 16) fprintf(stderr, "[mtl3-fence-err] encoder %s has no commandBuffer for fence tracking\n", object_getClassName(self));
+        return;
+    }
     DmCbFenceTracker *tracker = objc_getAssociatedObject(cb, &kFenceKey);
     if (!tracker && [cb respondsToSelector:@selector(device)]) {
         id dev = [cb device];
@@ -1135,8 +1145,13 @@ static char kFenceKey;
 }
 - (void)barrierAfterQueueStages:(NSUInteger)after beforeStages:(NSUInteger)before visibilityOptions:(NSUInteger)vis {
     (void)after; (void)before; (void)vis;
-    id cb = [self respondsToSelector:@selector(commandBuffer)] ? [(id)self commandBuffer] : nil;
-    if (!cb) return;
+    id cb = objc_getAssociatedObject(self, &kEncCbKey);
+    if (!cb && [self respondsToSelector:@selector(commandBuffer)]) cb = [(id)self commandBuffer];
+    if (!cb) {
+        static int warn_fence = 0;
+        if (warn_fence++ < 16) fprintf(stderr, "[mtl3-fence-err] encoder %s has no commandBuffer for fence tracking\n", object_getClassName(self));
+        return;
+    }
     DmCbFenceTracker *tracker = objc_getAssociatedObject(cb, &kFenceKey);
     if (!tracker || !tracker->_hasUpdate || tracker->_readyWaitIdx < 0) return;
     if (tracker->_lastUpdatingEncoder == (__bridge void *)self) return;
@@ -1346,75 +1361,6 @@ static char kFenceKey;
 - (id)newComputePipelineStateWithDescriptor:(id)descriptor error:(NSError **)error {
     if (error) *error = [NSError errorWithDomain:@"MTL4" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Archive not supported on iOS 18"}];
     return nil;
-}
-- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset size:(NSUInteger)size {
-    if ([sourceBuffer respondsToSelector:@selector(contents)] && sourceBuffer.contents &&
-        [destinationBuffer respondsToSelector:@selector(contents)] && destinationBuffer.contents) {
-        memcpy((uint8_t *)destinationBuffer.contents + destinationOffset, (const uint8_t *)sourceBuffer.contents + sourceOffset, size);
-    }
-}
-- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset sourceBytesPerRow:(NSUInteger)sourceBytesPerRow sourceBytesPerImage:(NSUInteger)sourceBytesPerImage sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
-    if ([destinationTexture respondsToSelector:@selector(storageMode)] && destinationTexture.storageMode != MTLStorageModeShared) {
-        static int warn_b2t = 0;
-        if (warn_b2t++ < 16) fprintf(stderr, "[mtl3-compat-warn] copyFromBuffer:toTexture skipped private tex %lux%lu on %s\n",
-                                     (unsigned long)destinationTexture.width, (unsigned long)destinationTexture.height, object_getClassName(self));
-        return;
-    }
-    if ([sourceBuffer respondsToSelector:@selector(contents)] && sourceBuffer.contents) {
-        const uint8_t *src = (const uint8_t *)sourceBuffer.contents + sourceOffset;
-        MTLRegion region = MTLRegionMake3D(destinationOrigin.x, destinationOrigin.y, destinationOrigin.z, sourceSize.width, sourceSize.height, sourceSize.depth);
-        [destinationTexture replaceRegion:region mipmapLevel:destinationLevel slice:destinationSlice withBytes:src bytesPerRow:sourceBytesPerRow bytesPerImage:sourceBytesPerImage];
-    }
-}
-- (void)copyFromBuffer:(id<MTLBuffer>)sourceBuffer sourceOffset:(NSUInteger)sourceOffset sourceBytesPerRow:(NSUInteger)sourceBytesPerRow sourceBytesPerImage:(NSUInteger)sourceBytesPerImage sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin options:(NSUInteger)options {
-    (void)options;
-    [self copyFromBuffer:sourceBuffer sourceOffset:sourceOffset sourceBytesPerRow:sourceBytesPerRow sourceBytesPerImage:sourceBytesPerImage sourceSize:sourceSize toTexture:destinationTexture destinationSlice:destinationSlice destinationLevel:destinationLevel destinationOrigin:destinationOrigin];
-}
-- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset destinationBytesPerRow:(NSUInteger)destinationBytesPerRow destinationBytesPerImage:(NSUInteger)destinationBytesPerImage {
-    if ([sourceTexture respondsToSelector:@selector(storageMode)] && sourceTexture.storageMode != MTLStorageModeShared) {
-        static int warn_t2b = 0;
-        if (warn_t2b++ < 16) fprintf(stderr, "[mtl3-compat-warn] copyFromTexture:toBuffer skipped private tex %lux%lu on %s\n",
-                                     (unsigned long)sourceTexture.width, (unsigned long)sourceTexture.height, object_getClassName(self));
-        return;
-    }
-    if ([destinationBuffer respondsToSelector:@selector(contents)] && destinationBuffer.contents) {
-        uint8_t *dst = (uint8_t *)destinationBuffer.contents + destinationOffset;
-        MTLRegion region = MTLRegionMake3D(sourceOrigin.x, sourceOrigin.y, sourceOrigin.z, sourceSize.width, sourceSize.height, sourceSize.depth);
-        [sourceTexture getBytes:dst bytesPerRow:destinationBytesPerRow bytesPerImage:destinationBytesPerImage fromRegion:region mipmapLevel:sourceLevel slice:sourceSlice];
-    }
-}
-- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toBuffer:(id<MTLBuffer>)destinationBuffer destinationOffset:(NSUInteger)destinationOffset destinationBytesPerRow:(NSUInteger)destinationBytesPerRow destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUInteger)options {
-    (void)options;
-    [self copyFromTexture:sourceTexture sourceSlice:sourceSlice sourceLevel:sourceLevel sourceOrigin:sourceOrigin sourceSize:sourceSize toBuffer:destinationBuffer destinationOffset:destinationOffset destinationBytesPerRow:destinationBytesPerRow destinationBytesPerImage:destinationBytesPerImage];
-}
-- (void)copyFromTexture:(id<MTLTexture>)sourceTexture sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel sourceOrigin:(MTLOrigin)sourceOrigin sourceSize:(MTLSize)sourceSize toTexture:(id<MTLTexture>)destinationTexture destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel destinationOrigin:(MTLOrigin)destinationOrigin {
-    if (([sourceTexture respondsToSelector:@selector(storageMode)] && sourceTexture.storageMode != MTLStorageModeShared) ||
-        ([destinationTexture respondsToSelector:@selector(storageMode)] && destinationTexture.storageMode != MTLStorageModeShared)) {
-        static int warn_t2t = 0;
-        if (warn_t2t++ < 16) fprintf(stderr, "[mtl3-compat-warn] copyFromTexture:toTexture skipped private tex %lux%lu on %s\n",
-                                     (unsigned long)sourceTexture.width, (unsigned long)sourceTexture.height, object_getClassName(self));
-        return;
-    }
-    if ([sourceTexture respondsToSelector:@selector(getBytes:bytesPerRow:bytesPerImage:fromRegion:mipmapLevel:slice:)] &&
-        [destinationTexture respondsToSelector:@selector(replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:)]) {
-        NSUInteger bpp = 4;
-        NSUInteger bytesPerRow = sourceSize.width * bpp;
-        NSUInteger bytesPerImage = bytesPerRow * sourceSize.height;
-        NSUInteger depth = sourceSize.depth > 0 ? sourceSize.depth : 1;
-        void *tmp = malloc(bytesPerImage * depth);
-        if (tmp) {
-            MTLRegion sreg = MTLRegionMake3D(sourceOrigin.x, sourceOrigin.y, sourceOrigin.z, sourceSize.width, sourceSize.height, depth);
-            [sourceTexture getBytes:tmp bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage fromRegion:sreg mipmapLevel:sourceLevel slice:sourceSlice];
-            MTLRegion dreg = MTLRegionMake3D(destinationOrigin.x, destinationOrigin.y, destinationOrigin.z, sourceSize.width, sourceSize.height, depth);
-            [destinationTexture replaceRegion:dreg mipmapLevel:destinationLevel slice:destinationSlice withBytes:tmp bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage];
-            free(tmp);
-        }
-    }
-}
-- (void)fillBuffer:(id<MTLBuffer>)buffer range:(NSRange)range value:(uint8_t)value {
-    if ([buffer respondsToSelector:@selector(contents)] && buffer.contents) {
-        memset((uint8_t *)buffer.contents + range.location, value, range.length);
-    }
 }
 - (void)dispatchThreadgroupsWithIndirectBuffer:(uint64_t)indirectBuffer threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
     if (!indirectBuffer) return;

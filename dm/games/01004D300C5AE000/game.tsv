@@ -43,6 +43,6 @@ shader_note	Kirby and the Forgotten Land shaders
 fps_target	30
 fps_max	60
 present_interval	display
-present_snap	on
+present_snap	off
 
 
