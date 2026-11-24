@@ -557,6 +557,18 @@ static char kCompatCtKey;
     [self applyToIndex:index];
 }
 
+- (void)setBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index {
+    if (index >= 32) return;
+    id<MTLBuffer> mbuf = buffer ? buffer : mtl_dummy_buf();
+    NSUInteger off = (buffer && offset < buffer.length) ? (offset & ~3u) : 0;
+    _addresses[index] = buffer ? (buffer.gpuAddress + off) : 0;
+    _buffers[index] = mbuf;
+    _offsets[index] = off;
+    _valid_mask |= (1u << index);
+    _dirty_mask |= (1u << index);
+    [self applyToIndex:index];
+}
+
 - (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index {
     if (index >= 32) return;
     id<MTLTexture> tex = nil;

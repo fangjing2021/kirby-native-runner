@@ -46,12 +46,14 @@ void mtl_compat_tag_encoder(id enc, id cb);
 
 @protocol MTL4ArgumentTable <NSObject>
 - (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index;
+- (void)setBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
 - (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index;
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index;
 @end
 
 @interface DmCompatArgumentTable : NSObject <MTL4ArgumentTable>
 - (void)setAddress:(uint64_t)address atIndex:(NSUInteger)index;
+- (void)setBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
 - (void)setTexture:(MTLResourceID)texture atIndex:(NSUInteger)index;
 - (void)setSamplerState:(MTLResourceID)sampler atIndex:(NSUInteger)index;
 - (void)bindToRenderEncoder:(id)encoder stages:(MTLRenderStages)stages;

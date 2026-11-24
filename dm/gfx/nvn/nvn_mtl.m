@@ -291,6 +291,85 @@ static void ws_report(uint64_t frame, uint64_t frames) {
 }
 #include "nvn_rec.h"   // deferred encoding (DM_NVN_ENC_THREAD)
 static NSHashTable *g_res_objects;
+typedef struct { uint64_t lo, hi; void *buf; } res_buf_ent;
+static os_unfair_lock g_res_buf_lk = OS_UNFAIR_LOCK_INIT;
+static res_buf_ent *g_res_bufs;
+static size_t g_nres_bufs, g_res_bufs_cap;
+
+static void res_buf_add(id<MTLAllocation> r) {
+    if (![(id)r conformsToProtocol:@protocol(MTLBuffer)]) return;
+    id<MTLBuffer> b = (id<MTLBuffer>)r;
+    uint64_t lo = b.gpuAddress, len = b.length;
+    if (!lo || !len) return;
+    uint64_t hi = lo + len;
+    void *ptr = (__bridge void *)b;
+    os_unfair_lock_lock(&g_res_buf_lk);
+    size_t l = 0, h = g_nres_bufs;
+    while (l < h) { size_t m = (l + h) >> 1; if (g_res_bufs[m].lo < lo) l = m + 1; else h = m; }
+    if (l < g_nres_bufs && g_res_bufs[l].lo == lo && g_res_bufs[l].buf == ptr) {
+        g_res_bufs[l].hi = hi;
+        os_unfair_lock_unlock(&g_res_buf_lk);
+        return;
+    }
+    if (g_nres_bufs == g_res_bufs_cap) {
+        g_res_bufs_cap = g_res_bufs_cap ? g_res_bufs_cap * 2 : 256;
+        g_res_bufs = realloc_or_die(g_res_bufs, g_res_bufs_cap * sizeof *g_res_bufs, "resident buffer index");
+    }
+    memmove(g_res_bufs + l + 1, g_res_bufs + l, (g_nres_bufs - l) * sizeof *g_res_bufs);
+    g_res_bufs[l] = (res_buf_ent){lo, hi, ptr};
+    g_nres_bufs++;
+    os_unfair_lock_unlock(&g_res_buf_lk);
+}
+
+static void res_buf_remove(id<MTLAllocation> r) {
+    if (![(id)r conformsToProtocol:@protocol(MTLBuffer)]) return;
+    id<MTLBuffer> b = (id<MTLBuffer>)r;
+    uint64_t lo = b.gpuAddress;
+    void *ptr = (__bridge void *)b;
+    os_unfair_lock_lock(&g_res_buf_lk);
+    size_t l = 0, h = g_nres_bufs;
+    while (l < h) { size_t m = (l + h) >> 1; if (g_res_bufs[m].lo < lo) l = m + 1; else h = m; }
+    int removed = 0;
+    while (l < g_nres_bufs && g_res_bufs[l].lo == lo) {
+        if (g_res_bufs[l].buf == ptr) {
+            memmove(g_res_bufs + l, g_res_bufs + l + 1, (g_nres_bufs - l - 1) * sizeof *g_res_bufs);
+            g_nres_bufs--;
+            removed = 1;
+            break;
+        }
+        l++;
+    }
+    // 兜底保障：若因 gpuAddress 不一致未能命中二分，执行全表线性扫除，杜绝悬垂指针
+    if (!removed) {
+        for (size_t i = 0; i < g_nres_bufs; i++) {
+            if (g_res_bufs[i].buf == ptr) {
+                memmove(g_res_bufs + i, g_res_bufs + i + 1, (g_nres_bufs - i - 1) * sizeof *g_res_bufs);
+                g_nres_bufs--;
+                break;
+            }
+        }
+    }
+    os_unfair_lock_unlock(&g_res_buf_lk);
+}
+
+static int res_buf_find(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
+    uint64_t check = len > 0 ? len : 1;
+    int found = 0;
+    os_unfair_lock_lock(&g_res_buf_lk);
+    size_t l = 0, h = g_nres_bufs;
+    while (l < h) { size_t m = (l + h) >> 1; if (g_res_bufs[m].lo <= addr) l = m + 1; else h = m; }
+    if (l > 0) {
+        const res_buf_ent *e = &g_res_bufs[l - 1];
+        if (addr >= e->lo && addr + check <= e->hi) {
+            *buf = e->buf;
+            *off = addr - e->lo;
+            found = 1;
+        }
+    }
+    os_unfair_lock_unlock(&g_res_buf_lk);
+    return found;
+}
+
 static _Atomic unsigned g_image_heap_n, g_big_n;   // g_big_n: large pools in chunks, whose buffers overlap (BIG_MIN)
 static inline MTL4VisibilityOptions resource_vis(void) { return MTL4VisibilityOptionDevice | (g_image_heap_n || g_big_n ? MTL4VisibilityOptionResourceAlias : 0); }
 // Residency churn by call site (the power line every 300 frames, mtl_res_stats): each commit with changes is a kernel call whose cost grows with what was added or removed
@@ -311,6 +390,7 @@ static void res_add_at(id<MTLAllocation> allocation, int line) { @autoreleasepoo
     { int k = 0; while (k < RS_SITES - 1 && g_rs_site[k].line && g_rs_site[k].line != line) k++; g_rs_site[k].line = line; g_rs_site[k].n++; g_rs_site[k].bytes += r.allocatedSize; }
     [g_res addAllocation:(id<MTLAllocation>)r];
     [g_res_objects addObject:r];
+    res_buf_add(r);
     if (g_res) {
         uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
         [g_res commit];
@@ -326,6 +406,7 @@ static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
     pthread_mutex_lock(&g_res_mu);
     if (![g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }
     [g_res removeAllocation:(id<MTLAllocation>)r];
+    res_buf_remove(r);
     [g_res_objects removeObject:r];
     g_res_dirty = 1; g_rs_rm++;
     pthread_mutex_unlock(&g_res_mu);
@@ -2081,7 +2162,7 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
     uint8_t b0 = (uint8_t)value;
     if (value == (uint32_t)b0 * 0x01010101u) { [blit_buf(0, 0, dst, dst + n) fillBuffer:(__bridge id<MTLBuffer>)db range:NSMakeRange(dof, n) value:b0]; return; }
     enum { PAT = 0x10000 }; static __strong id<MTLBuffer> pat; static uint32_t pat_v; static int pat_ok;
-    if (!pat_ok || pat_v != value) { uint32_t *tmp = malloc(PAT); for (unsigned i = 0; i < PAT / 4; i++) tmp[i] = value;
+    if (!pat_ok || pat_v != value) { if (pat) defer_obj_release(pat); uint32_t *tmp = malloc(PAT); for (unsigned i = 0; i < PAT / 4; i++) tmp[i] = value;
         pat = [g_dev newBufferWithBytes:tmp length:PAT options:MTLResourceStorageModeShared]; free(tmp); pat_v = value; pat_ok = 1; res_add(pat); }
     for (uint64_t off = 0; off < n; off += PAT) { uint64_t k = n - off < PAT ? n - off : PAT; enc_b_copy_buffer(blit_buf(0, 0, dst + off, dst + off + k), pat, 0, (__bridge id<MTLBuffer>)db, dof + off, k); }
 }
@@ -3180,7 +3261,7 @@ static void up_diag(void) { @autoreleasepool {
     int chg = g_up_swaps != said_swaps, fol = follow && now - last_ns >= 5000000000ull; if ((!chg && !fol) || lines >= 200) return;
     if (chg && last_ns && now - last_ns < 1000000000ull) return; last_ns = now; said_swaps = g_up_swaps; lines++; follow = chg;
     unsigned long alive = 0, inres = 0; uint64_t abytes = 0; NSArray *olds = g_up_old.allObjects;
-    pthread_mutex_lock(&g_res_mu); unsigned long nres = (unsigned long)g_res_objects.allObjects.count; for (id<MTLBuffer> o in olds) { alive++; abytes += o.length; inres += [g_res_objects containsObject:o]; } pthread_mutex_unlock(&g_res_mu);
+    pthread_mutex_lock(&g_res_mu); unsigned long nres = g_res ? (unsigned long)g_res.allocationCount : 0; for (id<MTLBuffer> o in olds) { alive++; abytes += o.length; inres += [g_res_objects containsObject:o]; } pthread_mutex_unlock(&g_res_mu);
     pthread_mutex_lock(&g_deferred_mu); unsigned long ndef = (unsigned long)g_deferred.count; pthread_mutex_unlock(&g_deferred_mu);
     MLOG("upload staging blocks%s: %llu created in total, swapped within a batch %llu times (%llu MB of old blocks swapped out); swapped-out blocks still alive now %lu, %llu MB, still in the residency set %lu; GPU allocated %llu MB, residency set %lu objects, deferred-release queue %lu", fol && !chg ? " (settled)" : "",
          (unsigned long long)g_up_blocks_new, (unsigned long long)g_up_swaps, (unsigned long long)(g_up_swap_bytes >> 20), alive, (unsigned long long)(abytes >> 20), inres, (unsigned long long)(g_dev.currentAllocatedSize >> 20), nres, ndef);
@@ -6991,25 +7072,8 @@ int mtl_gpu_to_buf(uint64_t gpu_addr, uint64_t len, void **buf, uint64_t *off) {
     }
     pthread_mutex_unlock(&g_mu);
 
-    // 5. Resident objects
-    pthread_mutex_lock(&g_res_mu);
-    if (g_res_objects) {
-        NSArray *objs = [g_res_objects allObjects];
-        for (id obj in objs) {
-            if ([obj respondsToSelector:@selector(gpuAddress)] && [obj respondsToSelector:@selector(length)]) {
-                id<MTLBuffer> mb = (id<MTLBuffer>)obj;
-                uint64_t bgpu = mb.gpuAddress;
-                NSUInteger blen = mb.length;
-                if (bgpu && gpu_addr >= bgpu && gpu_addr + check_len <= bgpu + blen) {
-                    *buf = (__bridge void *)mb;
-                    *off = gpu_addr - bgpu;
-                    pthread_mutex_unlock(&g_res_mu);
-                    return 1;
-                }
-            }
-        }
-    }
-    pthread_mutex_unlock(&g_res_mu);
+    // 5. Resident buffers (pure C binary search table, zero ObjC/weak-ref overhead)
+    if (res_buf_find(gpu_addr, len, buf, off)) return 1;
     return 0;
 }
 

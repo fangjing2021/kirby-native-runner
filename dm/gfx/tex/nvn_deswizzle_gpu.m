@@ -39,7 +39,14 @@ int nvn_deswz_gpu_direct_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTa
         src_off,base,layout.layer_size,MAX(d->width>>level,1u),MAX(d->height>>level,1u),layout.layers,level,th,MAX(nvn_tex_level_gobs(d,level),(row+63u)/64u),(uint32_t)nvn_gob_switch2};
     memcpy((uint8_t*)params.contents+params_off,&p,sizeof p);
     [enc setArgumentTable:table];[enc setComputePipelineState:g_nvn_deswz_direct];
-    [table setAddress:src.gpuAddress atIndex:0];[table setAddress:params.gpuAddress+params_off atIndex:2];[table setTexture:view.gpuResourceID atIndex:0];
+    if ([table respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+        [(id)table setBuffer:src offset:0 atIndex:0];
+        [(id)table setBuffer:params offset:params_off atIndex:2];
+    } else {
+        [table setAddress:src.gpuAddress atIndex:0];
+        [table setAddress:params.gpuAddress + params_off atIndex:2];
+    }
+    [table setTexture:view.gpuResourceID atIndex:0];
     if ([enc respondsToSelector:@selector(setTexture:atIndex:)]) {
         [(id<MTLComputeCommandEncoder>)enc setTexture:view atIndex:0];
     }
@@ -92,9 +99,15 @@ int nvn_deswz_gpu_encode_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTa
     memcpy((uint8_t *)params.contents + params_off, &p, sizeof p);
     [enc setArgumentTable:table];
     [enc setComputePipelineState:g_nvn_deswz_pipeline];
-    [table setAddress:src.gpuAddress atIndex:0];
-    [table setAddress:dst.gpuAddress atIndex:1];
-    [table setAddress:params.gpuAddress + params_off atIndex:2];
+    if ([table respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
+        [(id)table setBuffer:src offset:0 atIndex:0];
+        [(id)table setBuffer:dst offset:0 atIndex:1];
+        [(id)table setBuffer:params offset:params_off atIndex:2];
+    } else {
+        [table setAddress:src.gpuAddress atIndex:0];
+        [table setAddress:dst.gpuAddress atIndex:1];
+        [table setAddress:params.gpuAddress + params_off atIndex:2];
+    }
     if ([enc respondsToSelector:@selector(setBuffer:offset:atIndex:)]) {
         [(id<MTLComputeCommandEncoder>)enc setBuffer:src offset:0 atIndex:0];
         [(id<MTLComputeCommandEncoder>)enc setBuffer:dst offset:0 atIndex:1];
