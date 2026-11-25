@@ -377,13 +377,33 @@ enum { RS_SITES = 16 }; static struct { int line; uint64_t n, bytes; } g_rs_site
 #define res_add(r) res_add_at((r), __LINE__)
 // Both run on guest threads too (pool_res from mtl_addr, uploads), whose implicit autorelease pools never drain; containsObject: / removeObject: on a weak NSHashTable leave the object
 // autoreleased in the calling thread's pool (measured in a standalone test: the object outlived its last strong reference until the thread ended), so each has a pool of its own
+// 将纹理视图（parentTexture）与缓冲纹理（buffer）统一解包至真正拥有显存的根 MTLAllocation
+static id<MTLAllocation> res_root(id<MTLAllocation> allocation) {
+    if (!allocation) return nil;
+    id<MTLAllocation> r = allocation;
+    if ([(id)r conformsToProtocol:@protocol(MTLTexture)]) {
+        id<MTLTexture> t = (id<MTLTexture>)r;
+        while (t.parentTexture) t = t.parentTexture;
+        r = t.buffer ? (id<MTLAllocation>)t.buffer : (id<MTLAllocation>)t;
+    }
+    if ([(id)r conformsToProtocol:@protocol(MTLResource)] && ((id<MTLResource>)r).heap) {
+        r = (id<MTLAllocation>)((id<MTLResource>)r).heap;
+    }
+    return r;
+}
+
 static void res_add_at(id<MTLAllocation> allocation, int line) { @autoreleasepool {
     if (!allocation) return;
+    // 1. 先对原始纹理/视图登记 gpuResourceID（s_rid_textures 为弱表，无泄漏风险；必须在锁外执行）
     if ([(id)allocation conformsToProtocol:@protocol(MTLTexture)]) {
         mtl_register_texture((id<MTLTexture>)allocation);
     }
-    // An indirectly addressed placed texture needs its heap resident. The heap owner below removes it only after the last texture/view has gone.
-    id<MTLAllocation> r = [(id)allocation conformsToProtocol:@protocol(MTLResource)] && ((id<MTLResource>)allocation).heap ? (id)((id<MTLResource>)allocation).heap : allocation;
+    // 2. 仅将根分配对象（root texture / backing buffer / heap）加入 MTLResidencySet
+    id<MTLAllocation> r = res_root(allocation);
+    if (!r) return;
+    if (r != allocation && [(id)r conformsToProtocol:@protocol(MTLTexture)]) {
+        mtl_register_texture((id<MTLTexture>)r);
+    }
     pthread_mutex_lock(&g_res_mu);
     if (!g_res_objects) g_res_objects = [NSHashTable weakObjectsHashTable];
     if ([g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }   // already resident (a shared texture resolved again): marking the set dirty would cost a commit that changes nothing
@@ -402,7 +422,12 @@ static void res_add_at(id<MTLAllocation> allocation, int line) { @autoreleasepoo
 } }
 static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
     if (!r) return;
+    // 仅允许移除根分配对象：heap 放置纹理、视图、缓冲纹理的驻留归属其根对象
     if ([(id)r conformsToProtocol:@protocol(MTLResource)] && ((id<MTLResource>)r).heap) return;
+    if ([(id)r conformsToProtocol:@protocol(MTLTexture)]) {
+        id<MTLTexture> t = (id<MTLTexture>)r;
+        if (t.parentTexture || t.buffer) return;
+    }
     pthread_mutex_lock(&g_res_mu);
     if (![g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }
     [g_res removeAllocation:(id<MTLAllocation>)r];
@@ -541,7 +566,8 @@ static void res_check(id r, const char *what, int reg) {
     id<MTLResource> a = r; int hops = 0;
     if (is_tex) { id<MTLTexture> t = (id<MTLTexture>)a; while (t.parentTexture) { t = t.parentTexture; hops++; } a = t.buffer ? (id<MTLResource>)t.buffer : (id<MTLResource>)t; }
     if (a != r) { pthread_mutex_lock(&g_res_mu); res_use_note(a, what); pthread_mutex_unlock(&g_res_mu); }
-    pthread_mutex_lock(&g_res_mu); int ok = [g_res_objects containsObject:a.heap ? (id)a.heap : a]; pthread_mutex_unlock(&g_res_mu);
+    id<MTLAllocation> root = res_root(r);
+    pthread_mutex_lock(&g_res_mu); int ok = [g_res_objects containsObject:root]; pthread_mutex_unlock(&g_res_mu);
     if (!ok) { nbad++; id<MTLTexture> t = is_tex ? (id<MTLTexture>)r : nil;
         MLOG("[RED] missing residency #%d: %s slot %d %s %p (parent chain %d deep) allocated %lu B storage mode %lu%s", nbad, what, reg, is_tex ? "texture" : "buffer", (__bridge void *)a, hops, (unsigned long)a.allocatedSize, (unsigned long)a.storageMode,
              t ? [NSString stringWithFormat:@" format %lu %lux%lu type %lu usage %#lx", (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.textureType, (unsigned long)t.usage].UTF8String : ""); }
@@ -3107,6 +3133,7 @@ static id<MTLTexture> tex_upgrade_pfv(const tex_t *t, id<MTLTexture> base, MTLPi
 static _Atomic uint64_t g_upload_ns;   // Cumulative time of deswizzle + upload encoding on the submit thread (timing instrumentation)
 static _Atomic uint64_t g_upload_gpu_ns;
 static id<MTL4CommandBuffer> g_up_cb;
+static uint64_t g_up_flush_gen = 0;
 static id<MTL4ComputeCommandEncoder> g_up_ce;
 static _Atomic int g_up_alloc_busy[3];
 // Waiting for upload batches to finish (g_up_pending, g_up_alloc_busy): the batches' completion handler broadcasts after it updates them, so waiters sleep until then (they used to poll every 0.2–1 ms;
@@ -3221,6 +3248,7 @@ static void up_flush(void) {
     if (!g_cb) rec_publish();
     if (up_reuse()) g_up_slot_want[slot] = MAX(g_up_slot_want[slot], g_up_batch_bytes);
     g_up_cb = nil;
+    g_up_flush_gen++;
     up_diag();
     g_nup_blits = 0;
     [g_up_texs removeAllObjects];
@@ -3472,9 +3500,10 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
                 [g_up_ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
             }
         }
+        uint64_t prev_up_gen = g_up_flush_gen;
         size_t stg_off;
         id<MTLBuffer> stg = up_alloc(total ? total : 16, &stg_off);
-        if (upsrc) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }   // up_alloc may have flushed the batch that held the first one
+        if (upsrc && g_up_flush_gen != prev_up_gen) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }   // up_alloc flushed the batch that held the first one
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
         for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -4615,7 +4644,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     unsigned long long dr = rss_mb > last_rss ? rss_mb - last_rss : last_rss - rss_mb, dg = gpu > last_gpu ? gpu - last_gpu : last_gpu - gpu;
     if (lines >= 400 || (lines && dr < 64 && dg < 64 && frame - last_frame < 3000)) return; lines++; last_rss = rss_mb; last_gpu = gpu; last_frame = frame;
     pthread_mutex_lock(&g_deferred_mu); unsigned long nd = (unsigned long)g_deferred.count; pthread_mutex_unlock(&g_deferred_mu);
-    pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
+    pthread_mutex_lock(&g_res_mu); unsigned long nr = g_res ? (unsigned long)g_res.allocationCount : (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
     int live = 0, peak = 0, cap = 0; nvn_dirty_stat(&live, &peak, &cap);
     pthread_mutex_lock(&g_smu); unsigned ns = g_by_serial.n, ashared = g_alias.n, nghost = g_ghost.n, nwait = g_retire_held.n; uint64_t ghost_puts = g_ghost_puts;
     unsigned aorph = 0;   // shared textures no live texture object or finalized serial resolves to: kept only until their storage is taken over or their pool goes (alias_take_over)
@@ -4662,6 +4691,20 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
         MLOG("GPU allocation growth by op: op%d %llu MB, op%d %llu MB, op%d %llu MB, op%d %llu MB", top[0], g_ap_bytes[top[0]] >> 20, top[1], g_ap_bytes[top[1]] >> 20, top[2], g_ap_bytes[top[2]] >> 20, top[3], g_ap_bytes[top[3]] >> 20); }
     { void mtl_gmem_words(uint64_t *, uint64_t *, uint64_t *); uint64_t gw, go, gb; mtl_gmem_words(&gw, &go, &gb);
       if (gw) MLOG("raw pool table words at commit: %llu, of them %llu held an older table than the current one and %llu the current one behind the pools", (unsigned long long)gw, (unsigned long long)go, (unsigned long long)gb); }
+#if TARGET_OS_IPHONE
+    {
+        static int s_low_mem_dumped = 0;
+        size_t avail = os_proc_available_memory();
+        if (avail < (384ull << 20)) {
+            if (!s_low_mem_dumped) {
+                s_low_mem_dumped = 1;
+                res_top("[low-mem] headroom < 384 MB");
+            }
+        } else if (avail > (512ull << 20)) {
+            s_low_mem_dumped = 0;
+        }
+    }
+#endif
 }
 void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads) { *uploads = g_pkg_uploads; *reuploads = g_pkg_reuploads; }
 uint64_t mtl_pkg_edge_skips(void) { return g_pkg_edge_skips; }
